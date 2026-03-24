@@ -55,7 +55,8 @@ module top_pin_scan #(
     genvar gi;
     generate
         for (gi = 0; gi < 67; gi = gi + 1) begin : pin_bb
-            assign pin_t[gi] = 1'b1;  // DIAGNOSTIC: all tristated, no driving
+            // Active scan: tristate scanned pin, drive rest LOW. Skip p61 (R6 = board kill).
+            assign pin_t[gi] = (scan_idx == gi[6:0]) || (gi == 61);
         end
     endgenerate
 
