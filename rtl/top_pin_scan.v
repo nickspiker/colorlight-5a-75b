@@ -1,15 +1,9 @@
-// top_pin_scan.v — active pin continuity scanner with SH1106 OLED display
+// top_pin_scan.v — active pin scanner with 8bpp framebuffer + TRNG dithered OLED
 //
-// Scans 67 I/O pins sequentially: one pin tristated (pullup → HIGH),
-// other 66 driven LOW. 1 kHz tick → 1 ms settling per pin, 67 ms full cycle.
-//
-// Display (128×64, SH1106 I2C):
-//   Pages 0–3 (top 32 rows): columns 0–66 = pin state (white=HIGH, black=LOW)
-//   Page 4: binary ruler bits 0–3 (2 px thick each)
-//   Page 5: binary ruler bits 4–6 (2 px thick each)
-//   Pages 6–7: blank
-//
-// LED (active-low): lit when any pin reads LOW.
+// 67-pin sequential scanner with BB tristate I/O.
+// 8-bit framebuffer (8192 bytes, 128×64) written continuously from pin state.
+// TRNG dithering: 29 ring oscillators → temporal XOR → rotation mix → 8-bit threshold.
+// Geiger-counter LED: random toggles from TRNG.
 
 module top_pin_scan #(
     parameter integer CLK_DIV = 7
@@ -17,7 +11,7 @@ module top_pin_scan #(
     input  wire clk,
     output wire oled_scl,
     output wire oled_sda,
-    output wire led,
+    output reg  led,
     input  wire btn,
     output wire ntsc_sync,
     output wire ntsc_vid,
@@ -40,30 +34,25 @@ module top_pin_scan #(
     inout  wire p64, inout  wire p65, inout  wire p66
 );
 
-    // Unused outputs
     assign ntsc_sync = 1'b0;
     assign ntsc_vid  = 1'b0;
 
     // =========================================================================
-    // Explicit BB primitives — Yosys can't infer tristate from ? 1'bz : 1'b0
-    // BB: T=1 → tristate (input), T=0 → drive I onto B
+    // BB tristate I/O — scan_idx pin tristated, rest driven LOW
     // =========================================================================
     reg [6:0] scan_idx = 0;
     wire [66:0] pin_in;
-    wire [66:0] pin_t;  // per-pin tristate: 1 = input (being scanned), 0 = drive LOW
+    wire [66:0] pin_t;
 
     genvar gi;
     generate
         for (gi = 0; gi < 67; gi = gi + 1) begin : pin_bb
-            // Active scan: tristate scanned pin, drive rest LOW.
-            // Skip p61 (R6 = board kill), p41 (M3 = clock/oscillator)
-            assign pin_t[gi] = (scan_idx == gi[6:0]) || (gi == 61) || (gi == 41);
+            // Active scan: drive LOW, tristate scanned pin. Skip p61 (R6=board kill)
+            assign pin_t[gi] = (scan_idx == gi[6:0]) || (gi == 61);
         end
     endgenerate
 
-    // Pins with inverted idle state (LOW when floating) — drive HIGH, XOR result
-    wire [66:0] pin_invert = (67'd1 << 52) | (67'd1 << 53) | (67'd1 << 54);
-    wire [66:0] pin_drv = pin_invert;
+    wire [66:0] pin_drv = 67'd0;  // drive LOW
 
     BB bb_p0  (.B(p0),  .I(pin_drv[ 0]), .T(pin_t[ 0]), .O(pin_in[ 0]));
     BB bb_p1  (.B(p1),  .I(pin_drv[ 1]), .T(pin_t[ 1]), .O(pin_in[ 1]));
@@ -134,24 +123,100 @@ module top_pin_scan #(
     BB bb_p66 (.B(p66), .I(pin_drv[66]), .T(pin_t[66]), .O(pin_in[66]));
 
     // =========================================================================
-    // Pin scanner — 1 kHz tick, 67 ms full cycle
+    // Pin scanner — 8 kHz tick
     // =========================================================================
     reg [11:0] scan_timer = 0;
     reg [66:0] pin_result = {67{1'b1}};
 
-    wire scan_tick = (scan_timer == 12'd3124);  // 25MHz / 3125 = 8 kHz (~0.125ms per pin)
+    wire scan_tick = (scan_timer == 12'd3124);
     always @(posedge clk) begin
         scan_timer <= scan_tick ? 12'd0 : scan_timer + 1;
         if (scan_tick) begin
-            pin_result[scan_idx] <= pin_in[scan_idx] ^ pin_invert[scan_idx];
+            pin_result[scan_idx] <= pin_in[scan_idx];
             scan_idx <= (scan_idx == 7'd66) ? 7'd0 : scan_idx + 1;
         end
     end
 
-    // LED: ~12 Hz heartbeat
-    reg [20:0] led_cnt = 0;
-    always @(posedge clk) led_cnt <= led_cnt + 1;
-    assign led = led_cnt[20];  // 25MHz / 2^21 ≈ 11.9 Hz toggle, 50% duty
+    // =========================================================================
+    // TRNG — 29 ring oscillators, temporal XOR, rotation mix, fold to 8 bits
+    // =========================================================================
+    wire [28:0] ro_out;
+    generate
+        for (gi = 0; gi < 29; gi = gi + 1) begin : ro_gen
+            (* keep, syn_keep="true" *) wire fb;
+            (* keep *) LUT4 #(.INIT(16'h0100)) ro (
+                .A(fb), .B(1'b0), .C(1'b0), .D(1'b1), .Z(fb)
+            );
+            assign ro_out[gi] = fb;
+        end
+    endgenerate
+
+    reg [28:0] ro_prev = 0;
+    always @(posedge clk) ro_prev <= ro_out;
+    wire [28:0] jitter = ro_out ^ ro_prev;
+
+    // Rotation mix: coprime offsets 7, 13 for period 29
+    wire [28:0] mixed;
+    generate
+        for (gi = 0; gi < 29; gi = gi + 1) begin : mix_gen
+            assign mixed[gi] = jitter[gi] ^ jitter[(gi + 7) % 29] ^ jitter[(gi + 13) % 29];
+        end
+    endgenerate
+
+    // XOR-fold 29 → 8 bits
+    wire [7:0] trng_out = mixed[7:0] ^ mixed[15:8] ^ mixed[23:16] ^ {3'b0, mixed[28:24]};
+
+    // =========================================================================
+    // Geiger-counter LED — toggle on random TRNG events
+    // =========================================================================
+    reg [14:0] geiger_cnt = 0;
+    always @(posedge clk) begin
+        geiger_cnt <= geiger_cnt + 1;
+        if (&geiger_cnt) begin  // ~763 Hz sample rate
+            if (led && trng_out < 8'd8)      // OFF→ON: ~3% chance (rare flash)
+                led <= 1'b0;  // active-low: ON
+            else if (!led && trng_out < 8'd100) // ON→OFF: ~39% chance (brief stay)
+                led <= 1'b1;  // OFF
+        end
+    end
+
+    // =========================================================================
+    // 8bpp Framebuffer (8192 bytes, 128×64)
+    // Write port: 25 MHz continuous update from pin state / ruler / cursor
+    // Read port: CE-gated by OLED gather loop
+    // =========================================================================
+    reg [7:0] fb [0:8191];
+
+    // Suspect pins — show as 50% grey (0x80) in top portion
+    wire [6:0] wr_col = fb_wr_addr[6:0];
+    wire [5:0] wr_row = fb_wr_addr[12:7];
+    wire wr_is_stuck = (wr_col == 7'd37) || (wr_col == 7'd38) || (wr_col == 7'd39) ||
+                       (wr_col == 7'd52) || (wr_col == 7'd53) || (wr_col == 7'd54) ||
+                       (wr_col == 7'd59);
+    wire wr_pin_val = (wr_col < 7'd67) ? pin_result[wr_col] : 1'b0;
+    wire wr_scan_here = (wr_col < 7'd67) && (wr_col == scan_idx);
+
+    // Ruler: 2px per bit, bits 0-6 of column index
+    wire [2:0] ruler_bit = wr_row[3:1] - 3'd0;  // rows 32-47 → bit index 0-7
+    wire ruler_val = (ruler_bit < 3'd7 && wr_col < 7'd67) ? wr_col[ruler_bit] : 1'b0;
+
+    wire [7:0] fb_wr_pixel =
+        // Rows 0-15: grey marker (0x80) for stuck, else pin state
+        (wr_row < 6'd16) ? (wr_is_stuck ? 8'h80 : (wr_pin_val ? 8'hFF : 8'h00)) :
+        // Rows 16-30: live pin state
+        (wr_row < 6'd31) ? (wr_pin_val ? 8'hFF : 8'h00) :
+        // Row 31: scan cursor
+        (wr_row == 6'd31) ? (wr_scan_here ? 8'hFF : (wr_pin_val ? 8'hFF : 8'h00)) :
+        // Rows 32-47: binary ruler (2px per bit)
+        (wr_row < 6'd48) ? (ruler_val ? 8'hFF : 8'h00) :
+        // Rows 48-63: blank
+        8'h00;
+
+    reg [12:0] fb_wr_addr = 0;
+    always @(posedge clk) begin
+        fb[fb_wr_addr] <= fb_wr_pixel;
+        fb_wr_addr <= fb_wr_addr + 1;
+    end
 
     // =========================================================================
     // CE — ticks OLED FSM at I2C speed
@@ -218,30 +283,7 @@ module top_pin_scan #(
     end
 
     // =========================================================================
-    // Compute px_byte from page, col, and pin_result (no ROM, no gather)
-    // =========================================================================
-    wire pin_val = (col < 7'd67) ? pin_result[col] : 1'b0;
-
-    wire scan_here = (col < 7'd67) && (col == scan_idx);
-
-    // Stuck/suspect pins — show as grey checkerboard instead of live state
-    wire is_stuck = (col == 7'd37) || (col == 7'd38) || (col == 7'd39) ||
-                    (col == 7'd52) || (col == 7'd53) || (col == 7'd54) ||
-                    (col == 7'd59);
-    wire [7:0] grey = col[0] ? 8'hAA : 8'h55;  // checkerboard
-
-    wire [7:0] px_computed =
-        (page <= 3'd1) ? (is_stuck ? grey : {8{pin_val}}) :    // pages 0-1: grey marker or pin state
-        (page == 3'd2) ? {8{pin_val}} :                         // page 2: always live pin state
-        (page == 3'd3) ? {scan_here, {7{pin_val}}} :           // page 3: scan cursor + live pin state
-        (page == 3'd4) ? (col < 7'd67 ? {{2{col[3]}}, {2{col[2]}}, {2{col[1]}}, {2{col[0]}}}
-                                       : 8'h00) :      // page 4: ruler bits 0-3
-        (page == 3'd5) ? (col < 7'd67 ? {2'b00, {2{col[6]}}, {2{col[5]}}, {2{col[4]}}}
-                                       : 8'h00) :      // page 5: ruler bits 4-6
-        8'h00;
-
-    // =========================================================================
-    // OLED FSM — no gather state, px_byte computed directly
+    // OLED FSM — gather loop reads framebuffer, dithers with TRNG
     // =========================================================================
     localparam [2:0]
         ST_RESET   = 3'd0,
@@ -249,7 +291,7 @@ module top_pin_scan #(
         ST_WAIT    = 3'd2,
         ST_NEXT    = 3'd3,
         ST_BUSFREE = 3'd4,
-        ST_COMPUTE = 3'd5;  // 1-tick: latch px_computed after col/page update
+        ST_GATHER  = 3'd5;
 
     localparam [1:0]
         PH_INIT      = 2'd0,
@@ -264,8 +306,13 @@ module top_pin_scan #(
     reg [2:0]  page        = 0;
     reg [6:0]  col         = 0;
     reg [7:0]  px_byte     = 0;
+    reg [3:0]  gather_cnt  = 0;
+
+    // Framebuffer read: combinational address, registered output (no rom_addr register)
+    reg [7:0] fb_dout = 0;
 
     always @(posedge clk) if (ce) begin
+        fb_dout <= fb[{page, gather_cnt[2:0], col}];
         i2c_start <= 0;
 
         case (state)
@@ -345,10 +392,11 @@ module top_pin_scan #(
                         end
                         PH_PAGE_CMD: begin
                             if (cmd_idx == 4) begin
-                                phase   <= PH_PAGE_DATA;
-                                cmd_idx <= 0;
-                                col     <= 0;
-                                state   <= ST_BUSFREE;
+                                phase      <= PH_PAGE_DATA;
+                                cmd_idx    <= 0;
+                                col        <= 0;
+                                gather_cnt <= 0;
+                                state      <= ST_BUSFREE;
                             end else begin
                                 cmd_idx <= cmd_idx + 1;
                                 state   <= ST_SEND;
@@ -357,15 +405,21 @@ module top_pin_scan #(
                         PH_PAGE_DATA: begin
                             if (cmd_idx < 2) begin
                                 cmd_idx <= cmd_idx + 1;
-                                state   <= (cmd_idx == 1) ? ST_COMPUTE : ST_SEND;
+                                if (cmd_idx == 1) begin
+                                    gather_cnt <= 0;
+                                    state      <= ST_GATHER;
+                                end else begin
+                                    state <= ST_SEND;
+                                end
                             end else if (col == 7'd127) begin
                                 phase   <= PH_PAGE_CMD;
                                 cmd_idx <= 0;
                                 page    <= (page == 3'd7) ? 3'd0 : page + 1;
                                 state   <= ST_BUSFREE;
                             end else begin
-                                col     <= col + 1;
-                                state   <= ST_COMPUTE;
+                                col        <= col + 1;
+                                gather_cnt <= 0;
+                                state      <= ST_GATHER;
                             end
                         end
                     endcase
@@ -380,10 +434,18 @@ module top_pin_scan #(
                 end
             end
 
-            // 1-tick compute: col/page updated last tick, px_computed now valid
-            ST_COMPUTE: begin
-                px_byte <= px_computed;
-                state   <= ST_SEND;
+            // Gather 8 rows: fb address = {page, gather_cnt[2:0], col}
+            // gc=0: fb reads row 0 → fb_dout available at gc=1
+            // gc=1..8: dither fb_dout against TRNG, shift into px_byte
+            ST_GATHER: begin
+                gather_cnt <= gather_cnt + 1;
+                if (gather_cnt >= 4'd1) begin
+                    px_byte <= {(fb_dout >= trng_out), px_byte[7:1]};
+                end
+                if (gather_cnt == 4'd8) begin
+                    gather_cnt <= 0;
+                    state      <= ST_SEND;
+                end
             end
 
         endcase
