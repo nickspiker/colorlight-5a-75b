@@ -1,0 +1,28 @@
+# Colorlight 5A-75B v8.0 — base constraints
+# Crystal: 25 MHz on P6
+# LED: T6 (active-low, green)
+# Button: R7 (active-low)
+# J4 HUB75 — NTSC composite output + OLED I2C
+
+LOCATE COMP "clk" SITE "P6";
+IOBUF PORT "clk" IO_TYPE=LVCMOS33;
+
+LOCATE COMP "led" SITE "T6";
+IOBUF PORT "led" IO_TYPE=LVCMOS33;
+
+LOCATE COMP "btn" SITE "R7";
+IOBUF PORT "btn" IO_TYPE=LVCMOS33 PULLMODE=UP;
+
+# J4 HUB75 — NTSC composite (560Ω sync + 220Ω vid)
+LOCATE COMP "ntsc_sync" SITE "P5";
+IOBUF PORT "ntsc_sync" IO_TYPE=LVCMOS33;
+
+LOCATE COMP "ntsc_vid" SITE "R3";
+IOBUF PORT "ntsc_vid" IO_TYPE=LVCMOS33;
+
+# J4 HUB75 — OLED I2C (same connector as NTSC)
+LOCATE COMP "oled_scl" SITE "P2";
+IOBUF PORT "oled_scl" IO_TYPE=LVCMOS33;
+
+LOCATE COMP "oled_sda" SITE "R2";
+IOBUF PORT "oled_sda" IO_TYPE=LVCMOS33;
