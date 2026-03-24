@@ -9,7 +9,7 @@ SEED="${SEED:-4}"
 
 mkdir -p "$BUILD"
 
-PROGRAM=0; FLASH=0; CLKDIV=32
+PROGRAM=0; FLASH=0; CLKDIV=7
 for arg in "$@"; do
     case "$arg" in
         --program)   PROGRAM=1 ;;

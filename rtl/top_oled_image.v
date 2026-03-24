@@ -10,7 +10,7 @@
 //   ssd1306_i2c has its own internal CLK_DIV counter — ce and I2C are in step.
 
 module top_oled_image #(
-    parameter integer CLK_DIV = 64  // I2C bit-clock divider: SCL = 25MHz / CLK_DIV
+    parameter integer CLK_DIV = 7   // I2C bit-clock divider: SCL = 25MHz / CLK_DIV
 )(
     input  wire clk,        // 25 MHz
     output wire oled_scl,
