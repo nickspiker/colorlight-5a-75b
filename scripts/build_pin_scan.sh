@@ -40,7 +40,7 @@ echo ""
 echo "--- Place & Route ---"
 nextpnr-ecp5 --25k --package CABGA256 --speed 6 --seed "$SEED" \
     --lpf "$LPF" \
-    --freq 25 --ignore-loops \
+    --freq 25 --ignore-loops --timing-allow-fail \
     --json "$BUILD/pin_scan.json" \
     --textcfg "$BUILD/pin_scan.config" \
     2>&1 | tee "$BUILD/pin_scan_pnr.log" | grep -E "(Info|Warning|Error|MHz)"

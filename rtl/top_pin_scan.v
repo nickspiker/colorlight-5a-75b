@@ -125,17 +125,19 @@ module top_pin_scan #(
     // =========================================================================
     // Pin scanner — 8 kHz tick
     // =========================================================================
-    reg [11:0] scan_timer = 0;
+    reg [19:0] scan_timer = 0;
     reg [66:0] pin_result = {67{1'b1}};
 
-    wire scan_tick = (scan_timer == 12'd3124);
+    wire scan_tick = (scan_timer == 20'd799999);  // 25MHz / 800000 ≈ 31 Hz (~32ms per pin)
     always @(posedge clk) begin
-        scan_timer <= scan_tick ? 12'd0 : scan_timer + 1;
+        scan_timer <= scan_tick ? 20'd0 : scan_timer + 1;
         if (scan_tick) begin
             pin_result[scan_idx] <= pin_in[scan_idx];
             scan_idx <= (scan_idx == 7'd66) ? 7'd0 : scan_idx + 1;
         end
     end
+
+    // (cursor trail computed combinationally in framebuffer writer below)
 
     // =========================================================================
     // TRNG — 29 ring oscillators, temporal XOR, rotation mix, fold to 8 bits
@@ -194,21 +196,27 @@ module top_pin_scan #(
                        (wr_col == 7'd52) || (wr_col == 7'd53) || (wr_col == 7'd54) ||
                        (wr_col == 7'd59);
     wire wr_pin_val = (wr_col < 7'd67) ? pin_result[wr_col] : 1'b0;
-    wire wr_scan_here = (wr_col < 7'd67) && (wr_col == scan_idx);
+    wire [7:0] wr_pin_byte = wr_pin_val ? 8'hFF : 8'h00;
+
+    // Cursor trail: brightness from distance to scan_idx (255 >> dist, fades in 8 steps)
+    wire [6:0] cursor_dist = (scan_idx >= wr_col) ? (scan_idx - wr_col)
+                                                   : (scan_idx + 7'd67 - wr_col);
+    wire [7:0] wr_cursor = (wr_col < 7'd67 && cursor_dist < 7'd8) ? (8'hFF >> cursor_dist) : 8'h00;
+    wire [7:0] wr_knocked = (wr_pin_byte > wr_cursor) ? (wr_pin_byte - wr_cursor) : 8'h00;
 
     // Ruler: 2px per bit, bits 0-6 of column index
-    wire [2:0] ruler_bit = wr_row[3:1] - 3'd0;  // rows 32-47 → bit index 0-7
+    wire [2:0] ruler_bit = (wr_row - 6'd34) >> 1;  // rows 34-49 → bit index 0-7
     wire ruler_val = (ruler_bit < 3'd7 && wr_col < 7'd67) ? wr_col[ruler_bit] : 1'b0;
 
     wire [7:0] fb_wr_pixel =
         // Rows 0-15: grey marker (0x80) for stuck, else pin state
-        (wr_row < 6'd16) ? (wr_is_stuck ? 8'h80 : (wr_pin_val ? 8'hFF : 8'h00)) :
-        // Rows 16-30: live pin state
-        (wr_row < 6'd31) ? (wr_pin_val ? 8'hFF : 8'h00) :
-        // Row 31: scan cursor
-        (wr_row == 6'd31) ? (wr_scan_here ? 8'hFF : (wr_pin_val ? 8'hFF : 8'h00)) :
-        // Rows 32-47: binary ruler (2px per bit)
-        (wr_row < 6'd48) ? (ruler_val ? 8'hFF : 8'h00) :
+        (wr_row < 6'd16) ? (wr_is_stuck ? 8'h80 : wr_pin_byte) :
+        // Rows 16-31: live pin state
+        (wr_row < 6'd32) ? wr_pin_byte :
+        // Rows 32-33: 2px cursor trail (white fading to black over 8 columns)
+        (wr_row < 6'd34) ? wr_cursor :
+        // Rows 34-49: binary ruler (2px per bit)
+        (wr_row < 6'd50) ? (ruler_val ? 8'hFF : 8'h00) :
         // Rows 48-63: blank
         8'h00;
 
