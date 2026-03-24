@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build pin continuity scanner for Colorlight 5A-75B v8.0
-# Drives 67 pins low one at a time; any that read back low = connected.
-# Results: OLED bit bars (rows 0-1 = pins 0-66), CRT RUN/PASS, LED lights on any hit.
-# Usage: bash scripts/build_pin_scan.sh [--program] [--flash]
+# Active scan: tristate one pin at a time, drive other 66 LOW, sample after 1ms.
+# Results: OLED display (top half = pin states, bottom = binary ruler), LED on any hit.
+# Usage: bash scripts/build_pin_scan.sh [--program] [--flash] [--clkdiv=N]
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,19 +14,23 @@ SEED="${SEED:-4}"
 
 mkdir -p "$BUILD"
 
-PROGRAM=0; FLASH=0
+PROGRAM=0; FLASH=0; CLKDIV=7
 for arg in "$@"; do
     case "$arg" in
-        --program) PROGRAM=1 ;;
-        --flash)   FLASH=1   ;;
+        --program)   PROGRAM=1 ;;
+        --flash)     FLASH=1   ;;
+        --clkdiv)    shift; CLKDIV="$1" ;;
+        --clkdiv=*)  CLKDIV="${arg#--clkdiv=}" ;;
     esac
 done
+I2C_KHZ=$(awk "BEGIN { printf \"%.1f\", 25000 / $CLKDIV }")
+echo "CLK_DIV=$CLKDIV  I2C=${I2C_KHZ}kHz"
 
 echo "--- Synthesise ---"
 yosys -p "
     read_verilog $RTL/ssd1306_i2c.v
-    read_verilog $RTL/ssd1306_fb.v
     read_verilog $RTL/top_pin_scan.v
+    chparam -set CLK_DIV $CLKDIV top_pin_scan
     synth_ecp5 -nowidelut -abc2 -top top_pin_scan -json $BUILD/pin_scan.json
     stat
 " > "$BUILD/pin_scan_yosys.log" 2>&1
