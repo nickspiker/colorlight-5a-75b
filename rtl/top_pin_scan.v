@@ -55,90 +55,95 @@ module top_pin_scan #(
     genvar gi;
     generate
         for (gi = 0; gi < 67; gi = gi + 1) begin : pin_bb
-            // Active scan: tristate scanned pin, drive rest LOW. Skip p61 (R6 = board kill).
-            assign pin_t[gi] = (scan_idx == gi[6:0]) || (gi == 61);
+            // Active scan: tristate scanned pin, drive rest LOW.
+            // Skip p61 (R6 = board kill), p41 (M3 = clock/oscillator)
+            assign pin_t[gi] = (scan_idx == gi[6:0]) || (gi == 61) || (gi == 41);
         end
     endgenerate
 
-    BB bb_p0  (.B(p0),  .I(1'b0), .T(pin_t[ 0]), .O(pin_in[ 0]));
-    BB bb_p1  (.B(p1),  .I(1'b0), .T(pin_t[ 1]), .O(pin_in[ 1]));
-    BB bb_p2  (.B(p2),  .I(1'b0), .T(pin_t[ 2]), .O(pin_in[ 2]));
-    BB bb_p3  (.B(p3),  .I(1'b0), .T(pin_t[ 3]), .O(pin_in[ 3]));
-    BB bb_p4  (.B(p4),  .I(1'b0), .T(pin_t[ 4]), .O(pin_in[ 4]));
-    BB bb_p5  (.B(p5),  .I(1'b0), .T(pin_t[ 5]), .O(pin_in[ 5]));
-    BB bb_p6  (.B(p6),  .I(1'b0), .T(pin_t[ 6]), .O(pin_in[ 6]));
-    BB bb_p7  (.B(p7),  .I(1'b0), .T(pin_t[ 7]), .O(pin_in[ 7]));
-    BB bb_p8  (.B(p8),  .I(1'b0), .T(pin_t[ 8]), .O(pin_in[ 8]));
-    BB bb_p9  (.B(p9),  .I(1'b0), .T(pin_t[ 9]), .O(pin_in[ 9]));
-    BB bb_p10 (.B(p10), .I(1'b0), .T(pin_t[10]), .O(pin_in[10]));
-    BB bb_p11 (.B(p11), .I(1'b0), .T(pin_t[11]), .O(pin_in[11]));
-    BB bb_p12 (.B(p12), .I(1'b0), .T(pin_t[12]), .O(pin_in[12]));
-    BB bb_p13 (.B(p13), .I(1'b0), .T(pin_t[13]), .O(pin_in[13]));
-    BB bb_p14 (.B(p14), .I(1'b0), .T(pin_t[14]), .O(pin_in[14]));
-    BB bb_p15 (.B(p15), .I(1'b0), .T(pin_t[15]), .O(pin_in[15]));
-    BB bb_p16 (.B(p16), .I(1'b0), .T(pin_t[16]), .O(pin_in[16]));
-    BB bb_p17 (.B(p17), .I(1'b0), .T(pin_t[17]), .O(pin_in[17]));
-    BB bb_p18 (.B(p18), .I(1'b0), .T(pin_t[18]), .O(pin_in[18]));
-    BB bb_p19 (.B(p19), .I(1'b0), .T(pin_t[19]), .O(pin_in[19]));
-    BB bb_p20 (.B(p20), .I(1'b0), .T(pin_t[20]), .O(pin_in[20]));
-    BB bb_p21 (.B(p21), .I(1'b0), .T(pin_t[21]), .O(pin_in[21]));
-    BB bb_p22 (.B(p22), .I(1'b0), .T(pin_t[22]), .O(pin_in[22]));
-    BB bb_p23 (.B(p23), .I(1'b0), .T(pin_t[23]), .O(pin_in[23]));
-    BB bb_p24 (.B(p24), .I(1'b0), .T(pin_t[24]), .O(pin_in[24]));
-    BB bb_p25 (.B(p25), .I(1'b0), .T(pin_t[25]), .O(pin_in[25]));
-    BB bb_p26 (.B(p26), .I(1'b0), .T(pin_t[26]), .O(pin_in[26]));
-    BB bb_p27 (.B(p27), .I(1'b0), .T(pin_t[27]), .O(pin_in[27]));
-    BB bb_p28 (.B(p28), .I(1'b0), .T(pin_t[28]), .O(pin_in[28]));
-    BB bb_p29 (.B(p29), .I(1'b0), .T(pin_t[29]), .O(pin_in[29]));
-    BB bb_p30 (.B(p30), .I(1'b0), .T(pin_t[30]), .O(pin_in[30]));
-    BB bb_p31 (.B(p31), .I(1'b0), .T(pin_t[31]), .O(pin_in[31]));
-    BB bb_p32 (.B(p32), .I(1'b0), .T(pin_t[32]), .O(pin_in[32]));
-    BB bb_p33 (.B(p33), .I(1'b0), .T(pin_t[33]), .O(pin_in[33]));
-    BB bb_p34 (.B(p34), .I(1'b0), .T(pin_t[34]), .O(pin_in[34]));
-    BB bb_p35 (.B(p35), .I(1'b0), .T(pin_t[35]), .O(pin_in[35]));
-    BB bb_p36 (.B(p36), .I(1'b0), .T(pin_t[36]), .O(pin_in[36]));
-    BB bb_p37 (.B(p37), .I(1'b0), .T(pin_t[37]), .O(pin_in[37]));
-    BB bb_p38 (.B(p38), .I(1'b0), .T(pin_t[38]), .O(pin_in[38]));
-    BB bb_p39 (.B(p39), .I(1'b0), .T(pin_t[39]), .O(pin_in[39]));
-    BB bb_p40 (.B(p40), .I(1'b0), .T(pin_t[40]), .O(pin_in[40]));
-    BB bb_p41 (.B(p41), .I(1'b0), .T(pin_t[41]), .O(pin_in[41]));
-    BB bb_p42 (.B(p42), .I(1'b0), .T(pin_t[42]), .O(pin_in[42]));
-    BB bb_p43 (.B(p43), .I(1'b0), .T(pin_t[43]), .O(pin_in[43]));
-    BB bb_p44 (.B(p44), .I(1'b0), .T(pin_t[44]), .O(pin_in[44]));
-    BB bb_p45 (.B(p45), .I(1'b0), .T(pin_t[45]), .O(pin_in[45]));
-    BB bb_p46 (.B(p46), .I(1'b0), .T(pin_t[46]), .O(pin_in[46]));
-    BB bb_p47 (.B(p47), .I(1'b0), .T(pin_t[47]), .O(pin_in[47]));
-    BB bb_p48 (.B(p48), .I(1'b0), .T(pin_t[48]), .O(pin_in[48]));
-    BB bb_p49 (.B(p49), .I(1'b0), .T(pin_t[49]), .O(pin_in[49]));
-    BB bb_p50 (.B(p50), .I(1'b0), .T(pin_t[50]), .O(pin_in[50]));
-    BB bb_p51 (.B(p51), .I(1'b0), .T(pin_t[51]), .O(pin_in[51]));
-    BB bb_p52 (.B(p52), .I(1'b0), .T(pin_t[52]), .O(pin_in[52]));
-    BB bb_p53 (.B(p53), .I(1'b0), .T(pin_t[53]), .O(pin_in[53]));
-    BB bb_p54 (.B(p54), .I(1'b0), .T(pin_t[54]), .O(pin_in[54]));
-    BB bb_p55 (.B(p55), .I(1'b0), .T(pin_t[55]), .O(pin_in[55]));
-    BB bb_p56 (.B(p56), .I(1'b0), .T(pin_t[56]), .O(pin_in[56]));
-    BB bb_p57 (.B(p57), .I(1'b0), .T(pin_t[57]), .O(pin_in[57]));
-    BB bb_p58 (.B(p58), .I(1'b0), .T(pin_t[58]), .O(pin_in[58]));
-    BB bb_p59 (.B(p59), .I(1'b0), .T(pin_t[59]), .O(pin_in[59]));
-    BB bb_p60 (.B(p60), .I(1'b0), .T(pin_t[60]), .O(pin_in[60]));
-    BB bb_p61 (.B(p61), .I(1'b0), .T(pin_t[61]), .O(pin_in[61]));
-    BB bb_p62 (.B(p62), .I(1'b0), .T(pin_t[62]), .O(pin_in[62]));
-    BB bb_p63 (.B(p63), .I(1'b0), .T(pin_t[63]), .O(pin_in[63]));
-    BB bb_p64 (.B(p64), .I(1'b0), .T(pin_t[64]), .O(pin_in[64]));
-    BB bb_p65 (.B(p65), .I(1'b0), .T(pin_t[65]), .O(pin_in[65]));
-    BB bb_p66 (.B(p66), .I(1'b0), .T(pin_t[66]), .O(pin_in[66]));
+    // Pins with inverted idle state (LOW when floating) — drive HIGH, XOR result
+    wire [66:0] pin_invert = (67'd1 << 52) | (67'd1 << 53) | (67'd1 << 54);
+    wire [66:0] pin_drv = pin_invert;
+
+    BB bb_p0  (.B(p0),  .I(pin_drv[ 0]), .T(pin_t[ 0]), .O(pin_in[ 0]));
+    BB bb_p1  (.B(p1),  .I(pin_drv[ 1]), .T(pin_t[ 1]), .O(pin_in[ 1]));
+    BB bb_p2  (.B(p2),  .I(pin_drv[ 2]), .T(pin_t[ 2]), .O(pin_in[ 2]));
+    BB bb_p3  (.B(p3),  .I(pin_drv[ 3]), .T(pin_t[ 3]), .O(pin_in[ 3]));
+    BB bb_p4  (.B(p4),  .I(pin_drv[ 4]), .T(pin_t[ 4]), .O(pin_in[ 4]));
+    BB bb_p5  (.B(p5),  .I(pin_drv[ 5]), .T(pin_t[ 5]), .O(pin_in[ 5]));
+    BB bb_p6  (.B(p6),  .I(pin_drv[ 6]), .T(pin_t[ 6]), .O(pin_in[ 6]));
+    BB bb_p7  (.B(p7),  .I(pin_drv[ 7]), .T(pin_t[ 7]), .O(pin_in[ 7]));
+    BB bb_p8  (.B(p8),  .I(pin_drv[ 8]), .T(pin_t[ 8]), .O(pin_in[ 8]));
+    BB bb_p9  (.B(p9),  .I(pin_drv[ 9]), .T(pin_t[ 9]), .O(pin_in[ 9]));
+    BB bb_p10 (.B(p10), .I(pin_drv[10]), .T(pin_t[10]), .O(pin_in[10]));
+    BB bb_p11 (.B(p11), .I(pin_drv[11]), .T(pin_t[11]), .O(pin_in[11]));
+    BB bb_p12 (.B(p12), .I(pin_drv[12]), .T(pin_t[12]), .O(pin_in[12]));
+    BB bb_p13 (.B(p13), .I(pin_drv[13]), .T(pin_t[13]), .O(pin_in[13]));
+    BB bb_p14 (.B(p14), .I(pin_drv[14]), .T(pin_t[14]), .O(pin_in[14]));
+    BB bb_p15 (.B(p15), .I(pin_drv[15]), .T(pin_t[15]), .O(pin_in[15]));
+    BB bb_p16 (.B(p16), .I(pin_drv[16]), .T(pin_t[16]), .O(pin_in[16]));
+    BB bb_p17 (.B(p17), .I(pin_drv[17]), .T(pin_t[17]), .O(pin_in[17]));
+    BB bb_p18 (.B(p18), .I(pin_drv[18]), .T(pin_t[18]), .O(pin_in[18]));
+    BB bb_p19 (.B(p19), .I(pin_drv[19]), .T(pin_t[19]), .O(pin_in[19]));
+    BB bb_p20 (.B(p20), .I(pin_drv[20]), .T(pin_t[20]), .O(pin_in[20]));
+    BB bb_p21 (.B(p21), .I(pin_drv[21]), .T(pin_t[21]), .O(pin_in[21]));
+    BB bb_p22 (.B(p22), .I(pin_drv[22]), .T(pin_t[22]), .O(pin_in[22]));
+    BB bb_p23 (.B(p23), .I(pin_drv[23]), .T(pin_t[23]), .O(pin_in[23]));
+    BB bb_p24 (.B(p24), .I(pin_drv[24]), .T(pin_t[24]), .O(pin_in[24]));
+    BB bb_p25 (.B(p25), .I(pin_drv[25]), .T(pin_t[25]), .O(pin_in[25]));
+    BB bb_p26 (.B(p26), .I(pin_drv[26]), .T(pin_t[26]), .O(pin_in[26]));
+    BB bb_p27 (.B(p27), .I(pin_drv[27]), .T(pin_t[27]), .O(pin_in[27]));
+    BB bb_p28 (.B(p28), .I(pin_drv[28]), .T(pin_t[28]), .O(pin_in[28]));
+    BB bb_p29 (.B(p29), .I(pin_drv[29]), .T(pin_t[29]), .O(pin_in[29]));
+    BB bb_p30 (.B(p30), .I(pin_drv[30]), .T(pin_t[30]), .O(pin_in[30]));
+    BB bb_p31 (.B(p31), .I(pin_drv[31]), .T(pin_t[31]), .O(pin_in[31]));
+    BB bb_p32 (.B(p32), .I(pin_drv[32]), .T(pin_t[32]), .O(pin_in[32]));
+    BB bb_p33 (.B(p33), .I(pin_drv[33]), .T(pin_t[33]), .O(pin_in[33]));
+    BB bb_p34 (.B(p34), .I(pin_drv[34]), .T(pin_t[34]), .O(pin_in[34]));
+    BB bb_p35 (.B(p35), .I(pin_drv[35]), .T(pin_t[35]), .O(pin_in[35]));
+    BB bb_p36 (.B(p36), .I(pin_drv[36]), .T(pin_t[36]), .O(pin_in[36]));
+    BB bb_p37 (.B(p37), .I(pin_drv[37]), .T(pin_t[37]), .O(pin_in[37]));
+    BB bb_p38 (.B(p38), .I(pin_drv[38]), .T(pin_t[38]), .O(pin_in[38]));
+    BB bb_p39 (.B(p39), .I(pin_drv[39]), .T(pin_t[39]), .O(pin_in[39]));
+    BB bb_p40 (.B(p40), .I(pin_drv[40]), .T(pin_t[40]), .O(pin_in[40]));
+    BB bb_p41 (.B(p41), .I(pin_drv[41]), .T(pin_t[41]), .O(pin_in[41]));
+    BB bb_p42 (.B(p42), .I(pin_drv[42]), .T(pin_t[42]), .O(pin_in[42]));
+    BB bb_p43 (.B(p43), .I(pin_drv[43]), .T(pin_t[43]), .O(pin_in[43]));
+    BB bb_p44 (.B(p44), .I(pin_drv[44]), .T(pin_t[44]), .O(pin_in[44]));
+    BB bb_p45 (.B(p45), .I(pin_drv[45]), .T(pin_t[45]), .O(pin_in[45]));
+    BB bb_p46 (.B(p46), .I(pin_drv[46]), .T(pin_t[46]), .O(pin_in[46]));
+    BB bb_p47 (.B(p47), .I(pin_drv[47]), .T(pin_t[47]), .O(pin_in[47]));
+    BB bb_p48 (.B(p48), .I(pin_drv[48]), .T(pin_t[48]), .O(pin_in[48]));
+    BB bb_p49 (.B(p49), .I(pin_drv[49]), .T(pin_t[49]), .O(pin_in[49]));
+    BB bb_p50 (.B(p50), .I(pin_drv[50]), .T(pin_t[50]), .O(pin_in[50]));
+    BB bb_p51 (.B(p51), .I(pin_drv[51]), .T(pin_t[51]), .O(pin_in[51]));
+    BB bb_p52 (.B(p52), .I(pin_drv[52]), .T(pin_t[52]), .O(pin_in[52]));
+    BB bb_p53 (.B(p53), .I(pin_drv[53]), .T(pin_t[53]), .O(pin_in[53]));
+    BB bb_p54 (.B(p54), .I(pin_drv[54]), .T(pin_t[54]), .O(pin_in[54]));
+    BB bb_p55 (.B(p55), .I(pin_drv[55]), .T(pin_t[55]), .O(pin_in[55]));
+    BB bb_p56 (.B(p56), .I(pin_drv[56]), .T(pin_t[56]), .O(pin_in[56]));
+    BB bb_p57 (.B(p57), .I(pin_drv[57]), .T(pin_t[57]), .O(pin_in[57]));
+    BB bb_p58 (.B(p58), .I(pin_drv[58]), .T(pin_t[58]), .O(pin_in[58]));
+    BB bb_p59 (.B(p59), .I(pin_drv[59]), .T(pin_t[59]), .O(pin_in[59]));
+    BB bb_p60 (.B(p60), .I(pin_drv[60]), .T(pin_t[60]), .O(pin_in[60]));
+    BB bb_p61 (.B(p61), .I(pin_drv[61]), .T(pin_t[61]), .O(pin_in[61]));
+    BB bb_p62 (.B(p62), .I(pin_drv[62]), .T(pin_t[62]), .O(pin_in[62]));
+    BB bb_p63 (.B(p63), .I(pin_drv[63]), .T(pin_t[63]), .O(pin_in[63]));
+    BB bb_p64 (.B(p64), .I(pin_drv[64]), .T(pin_t[64]), .O(pin_in[64]));
+    BB bb_p65 (.B(p65), .I(pin_drv[65]), .T(pin_t[65]), .O(pin_in[65]));
+    BB bb_p66 (.B(p66), .I(pin_drv[66]), .T(pin_t[66]), .O(pin_in[66]));
 
     // =========================================================================
     // Pin scanner — 1 kHz tick, 67 ms full cycle
     // =========================================================================
-    reg [17:0] scan_timer = 0;
+    reg [11:0] scan_timer = 0;
     reg [66:0] pin_result = {67{1'b1}};
 
-    wire scan_tick = (scan_timer == 18'd199999);  // 25MHz / 200000 = 125 Hz (~8ms per pin)
+    wire scan_tick = (scan_timer == 12'd3124);  // 25MHz / 3125 = 8 kHz (~0.125ms per pin)
     always @(posedge clk) begin
-        scan_timer <= scan_tick ? 18'd0 : scan_timer + 1;
+        scan_timer <= scan_tick ? 12'd0 : scan_timer + 1;
         if (scan_tick) begin
-            pin_result[scan_idx] <= pin_in[scan_idx];
+            pin_result[scan_idx] <= pin_in[scan_idx] ^ pin_invert[scan_idx];
             scan_idx <= (scan_idx == 7'd66) ? 7'd0 : scan_idx + 1;
         end
     end
@@ -219,9 +224,16 @@ module top_pin_scan #(
 
     wire scan_here = (col < 7'd67) && (col == scan_idx);
 
+    // Stuck/suspect pins — show as grey checkerboard instead of live state
+    wire is_stuck = (col == 7'd37) || (col == 7'd38) || (col == 7'd39) ||
+                    (col == 7'd52) || (col == 7'd53) || (col == 7'd54) ||
+                    (col == 7'd59);
+    wire [7:0] grey = col[0] ? 8'hAA : 8'h55;  // checkerboard
+
     wire [7:0] px_computed =
-        (page <= 3'd2) ? {8{pin_val}} :                // pages 0-2: pin state
-        (page == 3'd3) ? {scan_here, {7{pin_val}}} :   // page 3: D7 scan cursor + pin state
+        (page <= 3'd1) ? (is_stuck ? grey : {8{pin_val}}) :    // pages 0-1: grey marker or pin state
+        (page == 3'd2) ? {8{pin_val}} :                         // page 2: always live pin state
+        (page == 3'd3) ? {scan_here, {7{pin_val}}} :           // page 3: scan cursor + live pin state
         (page == 3'd4) ? (col < 7'd67 ? {{2{col[3]}}, {2{col[2]}}, {2{col[1]}}, {2{col[0]}}}
                                        : 8'h00) :      // page 4: ruler bits 0-3
         (page == 3'd5) ? (col < 7'd67 ? {2'b00, {2{col[6]}}, {2{col[5]}}, {2{col[4]}}}
