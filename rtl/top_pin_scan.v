@@ -25,13 +25,13 @@ module top_pin_scan #(
     inout  wire p28, inout  wire p29, inout  wire p30, inout  wire p31,
     inout  wire p32, inout  wire p33, inout  wire p34, inout  wire p35,
     inout  wire p36, inout  wire p37, inout  wire p38, inout  wire p39,
-    inout  wire p40, inout  wire p41, output wire ext_led, inout  wire p43,
+    inout  wire p40, inout  wire p41, inout  wire p42, inout  wire p43,
     inout  wire p44, inout  wire p45, inout  wire p46, inout  wire p47,
     inout  wire p48, inout  wire p49, inout  wire p50, inout  wire p51,
     inout  wire p52, inout  wire p53, inout  wire p54, inout  wire p55,
     inout  wire p56, inout  wire p57, inout  wire p58, inout  wire p59,
     inout  wire p60, inout  wire p61, inout  wire p62, inout  wire p63,
-    inout  wire p64, inout  wire p65, inout  wire p66
+    inout  wire p64, output wire ext_led, inout  wire p66
 );
 
     assign ntsc_sync = 1'b0;
@@ -43,15 +43,14 @@ module top_pin_scan #(
     reg [6:0] scan_idx = 0;
     wire [66:0] pin_in;
     wire [66:0] pin_t;
-    wire [66:0] pin_drv;
+    wire [66:0] pin_drv = 67'd0;  // drive LOW
 
     genvar gi;
     generate
         for (gi = 0; gi < 67; gi = gi + 1) begin : pin_bb
-            // Active scan: only drive p27,p28,p44,p49-p51,p62,p63. Float everything else.
+            // Active scan: only drive button pins LOW, tristate scanned pin. Float everything else.
             wire active = (gi==27)||(gi==28)||(gi==44)||(gi==49)||(gi==50)||(gi==51)||(gi==56)||(gi==62)||(gi==63);
             assign pin_t[gi] = !active || (scan_idx == gi[6:0]);
-            assign pin_drv[gi] = 1'b0;
         end
     endgenerate
 
@@ -97,9 +96,7 @@ module top_pin_scan #(
     BB bb_p39 (.B(p39), .I(pin_drv[39]), .T(pin_t[39]), .O(pin_in[39]));
     BB bb_p40 (.B(p40), .I(pin_drv[40]), .T(pin_t[40]), .O(pin_in[40]));
     BB bb_p41 (.B(p41), .I(pin_drv[41]), .T(pin_t[41]), .O(pin_in[41]));
-    // p42 repurposed as ext_led output (J4 pin 6, through 74HC245T buffer)
-    assign ext_led = ~led;  // buffer is active-high, on-board LED is active-low
-    assign pin_in[42] = 1'b1;  // stub: always reads HIGH
+    BB bb_p42 (.B(p42), .I(pin_drv[42]), .T(pin_t[42]), .O(pin_in[42]));
     BB bb_p43 (.B(p43), .I(pin_drv[43]), .T(pin_t[43]), .O(pin_in[43]));
     BB bb_p44 (.B(p44), .I(pin_drv[44]), .T(pin_t[44]), .O(pin_in[44]));
     BB bb_p45 (.B(p45), .I(pin_drv[45]), .T(pin_t[45]), .O(pin_in[45]));
@@ -122,7 +119,9 @@ module top_pin_scan #(
     BB bb_p62 (.B(p62), .I(pin_drv[62]), .T(pin_t[62]), .O(pin_in[62]));
     BB bb_p63 (.B(p63), .I(pin_drv[63]), .T(pin_t[63]), .O(pin_in[63]));
     BB bb_p64 (.B(p64), .I(pin_drv[64]), .T(pin_t[64]), .O(pin_in[64]));
-    BB bb_p65 (.B(p65), .I(pin_drv[65]), .T(pin_t[65]), .O(pin_in[65]));
+    // p65 (T2) = J4 pin 6, ext_led through 74HC245T buffer
+    assign ext_led = ext_led_state;  // separate geiger (1/256 on, 13/256 off)
+    assign pin_in[65] = 1'b1;  // stub: always reads HIGH
     BB bb_p66 (.B(p66), .I(pin_drv[66]), .T(pin_t[66]), .O(pin_in[66]));
 
     // =========================================================================
@@ -175,6 +174,7 @@ module top_pin_scan #(
     // Geiger-counter LED — toggle on random TRNG events
     // =========================================================================
     reg [14:0] geiger_cnt = 0;
+    reg ext_led_state = 1'b0;
     always @(posedge clk) begin
         geiger_cnt <= geiger_cnt + 1;
         if (&geiger_cnt) begin  // ~763 Hz sample rate
@@ -182,6 +182,13 @@ module top_pin_scan #(
                 led <= 1'b0;  // active-low: ON
             else if (!led && trng_out < 8'd100) // ON→OFF: ~39% chance (brief stay)
                 led <= 1'b1;  // OFF
+        end
+        // ext_led: ~97 kHz rate geiger (1/256 on, 13/256 off)
+        if (&geiger_cnt[7:0]) begin
+            if (!ext_led_state && trng_out < 8'd1)
+                ext_led_state <= 1'b1;
+            else if (ext_led_state && trng_out < 8'd13)
+                ext_led_state <= 1'b0;
         end
     end
 
