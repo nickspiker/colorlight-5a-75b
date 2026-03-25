@@ -13,6 +13,7 @@ LPF="$ROOT/constraints/pin_scan.lpf"
 SEED="${SEED:-4}"
 
 mkdir -p "$BUILD"
+cp -f "$ROOT/data/glyphs.mem" "$BUILD/glyphs.mem"
 
 PROGRAM=0; FLASH=0; CLKDIV=7
 for arg in "$@"; do
@@ -27,6 +28,7 @@ I2C_KHZ=$(awk "BEGIN { printf \"%.1f\", 25000 / $CLKDIV }")
 echo "CLK_DIV=$CLKDIV  I2C=${I2C_KHZ}kHz"
 
 echo "--- Synthesise ---"
+cd "$BUILD"
 yosys -p "
     read_verilog $RTL/ssd1306_i2c.v
     read_verilog $RTL/top_pin_scan.v
@@ -34,6 +36,7 @@ yosys -p "
     synth_ecp5 -nowidelut -abc2 -top top_pin_scan -json $BUILD/pin_scan.json
     stat
 " > "$BUILD/pin_scan_yosys.log" 2>&1
+cd - > /dev/null
 grep -E "^(=== |   Number of|   Estimated)" "$BUILD/pin_scan_yosys.log" || tail -5 "$BUILD/pin_scan_yosys.log"
 
 echo ""

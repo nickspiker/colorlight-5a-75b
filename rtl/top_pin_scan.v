@@ -193,6 +193,46 @@ module top_pin_scan #(
     end
 
     // =========================================================================
+    // Button decoder — detect pin pairs from matrix
+    // =========================================================================
+    // Active-low: pin_result[N] == 0 means pin N is LOW (pressed)
+    wire [4:0] btn_id;  // 0 = none, 1-17 = button
+    wire p27L = !pin_result[27], p28L = !pin_result[28], p44L = !pin_result[44];
+    wire p49L = !pin_result[49], p50L = !pin_result[50], p51L = !pin_result[51];
+    wire p56L = !pin_result[56], p57L = !pin_result[57], p62L = !pin_result[62];
+    wire p63L = !pin_result[63];
+
+    assign btn_id =
+        // Digits (two-pin matrix)
+        (p51L && p62L) ? 5'd1  :  // Zil
+        (p51L && p63L) ? 5'd2  :  // Zila
+        (p49L && p51L) ? 5'd3  :  // Zilor
+        (p44L && p62L) ? 5'd4  :  // Ter
+        (p44L && p63L) ? 5'd5  :  // Tera
+        (p44L && p49L) ? 5'd6  :  // Teror
+        (p28L && p62L) ? 5'd7  :  // Lun
+        (p28L && p63L) ? 5'd8  :  // Luna
+        (p28L && p49L) ? 5'd9  :  // Lunor
+        (p27L && p62L) ? 5'd10 :  // Stel
+        (p27L && p63L) ? 5'd11 :  // Stela
+        (p27L && p49L) ? 5'd12 :  // Stelor
+        // Operators
+        (p50L && p62L) ? 5'd13 :  // Ƨ (negate)
+        (p28L && p56L) ? 5'd14 :  // +
+        (p50L && p63L) ? 5'd15 :  // ÷
+        (p51L && p56L) ? 5'd16 :  // ↑ (enter)
+        // GND buttons (swapped: * on 62, · on 57)
+        (p62L && !p27L && !p28L && !p44L && !p50L && !p51L) ? 5'd17 :  // * (multiply)
+        (p57L) ? 5'd18 :  // · (decimal / shift)
+        5'd0;  // none
+
+    // =========================================================================
+    // Glyph ROM — 19 glyphs × 16×16 × 8bpp = 4864 bytes
+    // =========================================================================
+    reg [7:0] glyph_rom [0:4863];
+    initial $readmemh("glyphs.mem", glyph_rom);
+
+    // =========================================================================
     // 8bpp Framebuffer (8192 bytes, 128×64)
     // Write port: 25 MHz continuous update from pin state / ruler / cursor
     // Read port: CE-gated by OLED gather loop
@@ -218,6 +258,14 @@ module top_pin_scan #(
     wire [2:0] ruler_bit = (wr_row - 6'd34) >> 1;  // rows 34-49 → bit index 0-7
     wire ruler_val = (ruler_bit < 3'd7 && wr_col < 7'd67) ? wr_col[ruler_bit] : 1'b0;
 
+    // Glyph display: 16x16 centered at cols 56-71, rows 48-63
+    wire glyph_active = (btn_id != 5'd0) && (wr_row >= 6'd48) &&
+                        (wr_col >= 7'd56) && (wr_col < 7'd72);
+    wire [3:0] glyph_row = wr_row - 6'd48;
+    wire [3:0] glyph_col = wr_col - 7'd56;
+    wire [12:0] glyph_addr = {btn_id - 5'd1, glyph_row, glyph_col};
+    wire [7:0] glyph_pixel = glyph_rom[glyph_addr];
+
     wire [7:0] fb_wr_pixel =
         // Rows 0-15: grey marker (0x80) for stuck, else pin state
         (wr_row < 6'd16) ? (wr_is_stuck ? 8'h80 : wr_pin_byte) :
@@ -225,10 +273,10 @@ module top_pin_scan #(
         (wr_row < 6'd32) ? wr_pin_byte :
         // Rows 32-33: 2px cursor trail (white fading to black over 8 columns)
         (wr_row < 6'd34) ? wr_cursor :
-        // Rows 34-49: binary ruler (2px per bit)
-        (wr_row < 6'd50) ? (ruler_val ? 8'hFF : 8'h00) :
-        // Rows 48-63: blank
-        8'h00;
+        // Rows 34-47: binary ruler (2px per bit, 7 bits)
+        (wr_row < 6'd48) ? (ruler_val ? 8'hFF : 8'h00) :
+        // Rows 48-63: glyph display (16x16 centered) or ruler remainder
+        glyph_active ? glyph_pixel : 8'h00;
 
     reg [12:0] fb_wr_addr = 0;
     always @(posedge clk) begin
