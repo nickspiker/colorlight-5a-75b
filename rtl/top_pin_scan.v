@@ -252,20 +252,29 @@ module top_pin_scan #(
     // If · released while button still held, stay shifted.
     wire dot_held = !pin_result[57];
 
-    reg was_shifted = 0;  // latches when a chord starts, clears on button release
+    reg was_shifted = 0;       // latches when a chord starts, clears on button release
+    reg [5:0] held_slot = 0;   // last shifted glyph while · held
 
     always @(posedge clk) begin
-        if (dot_held && btn_id != 5'd0 && btn_id != 5'd18)
+        // Chord start: · held + button pressed
+        if (dot_held && btn_id != 5'd0 && btn_id != 5'd18) begin
             was_shifted <= 1;
-        if (btn_id == 5'd0)
+            held_slot <= btn_id + 6'd17;
+        end
+        // Button released (without ·): clear shift
+        if (!dot_held && btn_id == 5'd0)
             was_shifted <= 0;
+        // · released: clear held slot
+        if (!dot_held)
+            held_slot <= 0;
     end
 
     wire shifted = dot_held || was_shifted;
 
     wire [5:0] glyph_slot =
-        (shifted && btn_id != 5'd0 && btn_id != 5'd18) ? (btn_id + 6'd17) :
-        (btn_id != 5'd0) ? (btn_id - 6'd1) :
+        (shifted && btn_id != 5'd0 && btn_id != 5'd18) ? (btn_id + 6'd17) :  // active chord press
+        (dot_held && held_slot != 6'd0) ? held_slot :                          // · held, button released
+        (btn_id != 5'd0) ? (btn_id - 6'd1) :                                  // primary
         6'd0;
 
     // =========================================================================
@@ -289,10 +298,28 @@ module top_pin_scan #(
     wire [3:0] glyph_y = wr_row - 6'd24;
     wire [3:0] glyph_x = wr_col - 7'd56;
 
-    wire [13:0] glyph_addr = {glyph_slot, glyph_y, glyph_x};
-    wire [7:0] glyph_pixel = (btn_id != 5'd0 || dot_held) ? glyph_rom[glyph_addr] : 8'h00;
+    // Latch-on-first non-· button. · alone shows live (not locked).
+    reg [5:0] display_slot = 0;
+    reg display_locked = 0;
+    always @(posedge clk) begin
+        // Lock on first non-· button (primary or shifted)
+        if (!display_locked && btn_id != 5'd0 && btn_id != 5'd18) begin
+            display_slot <= glyph_slot;
+            display_locked <= 1;
+        end
+        // Full release: clear lock
+        if (btn_id == 5'd0 && !dot_held)
+            display_locked <= 0;
+    end
 
-    wire glyph_show = glyph_active && (btn_id != 5'd0 || dot_held);
+    // Show locked slot if locked, otherwise live glyph_slot (for · preview)
+    wire [5:0] active_slot = display_locked ? display_slot : glyph_slot;
+    wire active_valid = display_locked || (btn_id != 5'd0) || (dot_held && held_slot != 6'd0);
+
+    wire [13:0] glyph_addr = {active_slot, glyph_y, glyph_x};
+    wire [7:0] glyph_pixel = active_valid ? glyph_rom[glyph_addr] : 8'h00;
+
+    wire glyph_show = glyph_active && active_valid;
 
     // 1px white border outside the 16x16 glyph (18x18 outline)
     wire border_active = ((wr_row >= 6'd23) && (wr_row < 6'd41) &&
