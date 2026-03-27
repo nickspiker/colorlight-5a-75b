@@ -194,17 +194,19 @@ module top_pin_scan #(
     reg ext_led_state = 1'b0;
     always @(posedge clk) begin
         geiger_cnt <= geiger_cnt + 1;
-        if (&geiger_cnt) begin  // ~763 Hz sample rate
-            if (led && trng_out < 8'd8)      // OFF→ON: ~3% chance (rare flash)
-                led <= 1'b0;  // active-low: ON
-            else if (!led && trng_out < 8'd100) // ON→OFF: ~39% chance (brief stay)
-                led <= 1'b1;  // OFF
+        if (&geiger_cnt) begin
+            if (led && trng_out < 8'd8)
+                led <= 1'b0;
+            else if (!led && trng_out < 8'd100)
+                led <= 1'b1;
         end
-        // ext_led: ~97 kHz rate geiger (1/256 on, 13/256 off)
-        if (&geiger_cnt[7:0]) begin
+        // ext_led: solid ON when button held, geiger when idle
+        if (btn_id != 5'd0)
+            ext_led_state <= 1'b1;
+        else if (&geiger_cnt[7:0]) begin
             if (!ext_led_state && trng_out < 8'd1)
                 ext_led_state <= 1'b1;
-            else if (ext_led_state && trng_out < 8'd13)
+            else if (ext_led_state && trng_out < 8'd254)
                 ext_led_state <= 1'b0;
         end
     end
