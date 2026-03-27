@@ -330,13 +330,15 @@ module top_pin_scan #(
 
         // Lock when stable across 2 full scan cycles
         if (!display_locked && seen_idle && btn_stable &&
-            sampled_btn != 5'd0 && sampled_btn != 5'd18) begin
+            sampled_btn != 5'd0) begin
             display_slot <= glyph_slot;
             display_locked <= 1;
             seen_idle <= 0;
         end
-        // · added while button held: upgrade to shifted
-        if (display_locked && dot_held && !prev_dot_held && btn_id != 5'd0 && btn_id != 5'd18)
+        // Upgrade: · held + button appears while locked on decimal → shifted
+        // Also: button held + · added → shifted
+        if (display_locked && dot_held && btn_id != 5'd0 && btn_id != 5'd18 &&
+            (display_slot == 6'd17 || !prev_dot_held))
             display_slot <= btn_id + 6'd17;
         // Full release: clear lock
         if (btn_id == 5'd0 && !dot_held)
@@ -633,7 +635,7 @@ module top_pin_scan #(
             ST_GATHER: begin
                 gather_cnt <= gather_cnt + 1;
                 if (gather_cnt >= 4'd1) begin
-                    px_byte <= {(fb_dout >= trng_out), px_byte[7:1]};
+                    px_byte <= {(fb_dout > trng_out), px_byte[7:1]};
                 end
                 if (gather_cnt == 4'd8) begin
                     gather_cnt <= 0;
