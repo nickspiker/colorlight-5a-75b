@@ -200,10 +200,17 @@ module top_pin_scan #(
             else if (!led && trng_out < 8'd100)
                 led <= 1'b1;
         end
-        // ext_led: solid ON when button held, geiger when idle
-        if (btn_id != 5'd0)
-            ext_led_state <= 1'b1;
-        else if (&geiger_cnt[7:0]) begin
+        // Multi-press: count LOW button pins (excl p57). Single = 2, p50/p51 coupling = 3.
+        // 4+ = multi-press.
+        // ext_led: solid ON = single press, OFF = multi-press, geiger = idle
+        if (btn_id != 5'd0) begin
+            if ((!pin_result[27]) + (!pin_result[28]) + (!pin_result[44]) +
+                (!pin_result[49]) + (!pin_result[50]) + (!pin_result[51]) +
+                (!pin_result[56]) + (!pin_result[62]) + (!pin_result[63]) > 4'd3)
+                ext_led_state <= 1'b0;  // multi-press: LED dark
+            else
+                ext_led_state <= 1'b1;  // single press: LED on
+        end else if (&geiger_cnt[7:0]) begin
             if (!ext_led_state && trng_out < 8'd1)
                 ext_led_state <= 1'b1;
             else if (ext_led_state && trng_out < 8'd255)
@@ -291,22 +298,46 @@ module top_pin_scan #(
     wire [6:0] wr_col = fb_wr_addr[6:0];
     wire [5:0] wr_row = fb_wr_addr[12:7];
 
-    // Live press glyph: 16x16 centered (rows 24-39, cols 56-71)
-    wire glyph_active = (btn_id != 5'd0) &&
-                        (wr_row >= 6'd24) && (wr_row < 6'd40) &&
-                        (wr_col >= 7'd56) && (wr_col < 7'd72);
-    wire [3:0] glyph_y = wr_row - 6'd24;
-    wire [3:0] glyph_x = wr_col - 7'd56;
-
-    // Latch-on-first non-· button. · alone shows live (not locked).
+    // =========================================================================
+    // Latch-on-first + commit-on-release
+    // =========================================================================
     reg [5:0] display_slot = 0;
     reg display_locked = 0;
+    reg prev_dot_held = 0;
+    reg was_locked = 0;    // edge detect for commit
+    reg seen_idle = 1;     // must see btn_id==0 before allowing new lock
+
+    // Sample btn_id only at end of full scan cycle (all 10 pins fresh)
+    wire scan_complete = scan_tick && (btn_scan == 4'd9);
+    reg [4:0] sampled_btn = 0;
+    reg [4:0] prev_sampled = 0;
     always @(posedge clk) begin
-        // Lock on first non-· button (primary or shifted)
-        if (!display_locked && btn_id != 5'd0 && btn_id != 5'd18) begin
+        if (scan_complete) begin
+            prev_sampled <= sampled_btn;
+            sampled_btn <= btn_id;
+        end
+    end
+    // Stable = same btn_id for 2 full scan cycles
+    wire btn_stable = (sampled_btn == prev_sampled);
+
+    always @(posedge clk) begin
+        prev_dot_held <= dot_held;
+        was_locked <= display_locked;
+
+        // Track idle: must see all released before new lock
+        if (btn_id == 5'd0 && !dot_held)
+            seen_idle <= 1;
+
+        // Lock when stable across 2 full scan cycles
+        if (!display_locked && seen_idle && btn_stable &&
+            sampled_btn != 5'd0 && sampled_btn != 5'd18) begin
             display_slot <= glyph_slot;
             display_locked <= 1;
+            seen_idle <= 0;
         end
+        // · added while button held: upgrade to shifted
+        if (display_locked && dot_held && !prev_dot_held && btn_id != 5'd0 && btn_id != 5'd18)
+            display_slot <= btn_id + 6'd17;
         // Full release: clear lock
         if (btn_id == 5'd0 && !dot_held)
             display_locked <= 0;
@@ -316,18 +347,63 @@ module top_pin_scan #(
     wire [5:0] active_slot = display_locked ? display_slot : glyph_slot;
     wire active_valid = display_locked || (btn_id != 5'd0) || (dot_held && held_slot != 6'd0);
 
-    wire [13:0] glyph_addr = {active_slot, glyph_y, glyph_x};
-    wire [7:0] glyph_pixel = active_valid ? glyph_rom[glyph_addr] : 8'h00;
+    // =========================================================================
+    // History buffer — commit on release (locked→unlocked edge)
+    // =========================================================================
+    reg [5:0] history [0:7];  // 8 slots
+    reg [3:0] hist_len = 0;
+    integer hi;
+    initial for (hi = 0; hi < 8; hi = hi + 1) history[hi] = 6'd0;
 
-    wire glyph_show = glyph_active && active_valid;
+    always @(posedge clk) begin
+        if (was_locked && !display_locked) begin
+            if (hist_len < 4'd8) begin
+                history[hist_len[2:0]] <= display_slot;
+                hist_len <= hist_len + 1;
+            end else begin
+                // Scroll left
+                history[0] <= history[1];
+                history[1] <= history[2];
+                history[2] <= history[3];
+                history[3] <= history[4];
+                history[4] <= history[5];
+                history[5] <= history[6];
+                history[6] <= history[7];
+                history[7] <= display_slot;
+            end
+        end
+    end
 
-    // 1px white border outside the 16x16 glyph (18x18 outline)
-    wire border_active = ((wr_row >= 6'd23) && (wr_row < 6'd41) &&
-                          (wr_col >= 7'd55) && (wr_col < 7'd73)) &&
-                         ((wr_row == 6'd23) || (wr_row == 6'd40) ||
-                          (wr_col == 7'd55) || (wr_col == 7'd72));
+    // =========================================================================
+    // Display: 8 glyphs across (16px each = 128px), vertically centered
+    // =========================================================================
+    // History row: rows 24-39, full width
+    wire in_hist_band = (wr_row >= 6'd24) && (wr_row < 6'd40);
+    wire [3:0] glyph_y = wr_row - 6'd24;
+    wire [2:0] hist_col = wr_col[6:4];  // 0-7, each 16px wide
+    wire [3:0] glyph_x = wr_col[3:0];   // 0-15 within each slot
 
-    wire [7:0] fb_wr_pixel = glyph_show ? glyph_pixel : border_active ? 8'hFF : 8'h00;
+    wire hist_in_range = ({1'b0, hist_col} < hist_len);
+    wire [5:0] hist_slot = hist_in_range ? history[hist_col] : 6'd0;
+    wire hist_valid = in_hist_band && hist_in_range;
+
+    // Live press: bottom row (rows 46-61), rightmost 16px (cols 112-127)
+    wire live_band = active_valid &&
+                     (wr_row >= 6'd46) && (wr_row < 6'd62) &&
+                     (wr_col >= 7'd112) && (wr_col < 7'd128);
+    wire [3:0] live_y = wr_row - 6'd46;
+    wire [3:0] live_x = wr_col - 7'd112;
+
+    // Glyph ROM lookup: history or live
+    wire [5:0] render_slot = live_band ? active_slot : hist_slot;
+    wire [3:0] render_y = live_band ? live_y : glyph_y;
+    wire [3:0] render_x = live_band ? live_x : glyph_x;
+    wire render_valid = live_band || hist_valid;
+
+    wire [13:0] glyph_addr = {render_slot, render_y, render_x};
+    wire [7:0] glyph_pixel = render_valid ? glyph_rom[glyph_addr] : 8'h00;
+
+    wire [7:0] fb_wr_pixel = render_valid ? glyph_pixel : 8'h00;
 
     reg [12:0] fb_wr_addr = 0;
     always @(posedge clk) begin
