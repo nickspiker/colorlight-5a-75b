@@ -125,21 +125,38 @@ module top_pin_scan #(
     BB bb_p66 (.B(p66), .I(pin_drv[66]), .T(pin_t[66]), .O(pin_in[66]));
 
     // =========================================================================
-    // Pin scanner — 8 kHz tick
+    // Fast pin scanner — only 9 button pins, no divider
     // =========================================================================
     reg [66:0] pin_result = {67{1'b1}};
 
-    reg [7:0] scan_div = 0;
+    // Scan only button pins: 27,28,44,49,50,51,56,57,62,63 (10 pins)
+    // scan_idx cycles through these specific pins
+    reg [3:0] btn_scan = 0;  // 0-9 index into button pin list
+
+    // Same scan_div timing as original (proven to work), but only 10 button pins.
+    // Original: 67 pins × 1792 clocks = 4.8ms. This: 10 pins × 1792 = 0.72ms.
+    reg [5:0] scan_div = 0;
     wire scan_tick = ce && (&scan_div);
     always @(posedge clk) if (ce) scan_div <= scan_div + 1;
+
     always @(posedge clk) begin
         if (scan_tick) begin
             pin_result[scan_idx] <= pin_in[scan_idx];
-            scan_idx <= (scan_idx == 7'd66) ? 7'd0 : scan_idx + 1;
+            case (btn_scan)
+                4'd0: scan_idx <= 7'd27;
+                4'd1: scan_idx <= 7'd28;
+                4'd2: scan_idx <= 7'd44;
+                4'd3: scan_idx <= 7'd49;
+                4'd4: scan_idx <= 7'd50;
+                4'd5: scan_idx <= 7'd51;
+                4'd6: scan_idx <= 7'd56;
+                4'd7: scan_idx <= 7'd57;
+                4'd8: scan_idx <= 7'd62;
+                default: scan_idx <= 7'd63;
+            endcase
+            btn_scan <= (btn_scan == 4'd9) ? 4'd0 : btn_scan + 1;
         end
     end
-
-    // (cursor trail computed combinationally in framebuffer writer below)
 
     // =========================================================================
     // TRNG — 29 ring oscillators, temporal XOR, rotation mix, fold to 8 bits
@@ -227,56 +244,29 @@ module top_pin_scan #(
         5'd0;  // none
 
     // =========================================================================
-    // Glyph ROM — 19 glyphs × 16×16 × 8bpp = 4864 bytes
+    // Glyph ROM — 18 glyphs × 16×16 × 8bpp = 4608 bytes
     // =========================================================================
-    reg [7:0] glyph_rom [0:4863];
+    reg [7:0] glyph_rom [0:4607];
     initial $readmemh("glyphs.mem", glyph_rom);
 
     // =========================================================================
     // 8bpp Framebuffer (8192 bytes, 128×64)
-    // Write port: 25 MHz continuous update from pin state / ruler / cursor
-    // Read port: CE-gated by OLED gather loop
     // =========================================================================
     reg [7:0] fb [0:8191];
 
-    // Suspect pins — show as 50% grey (0x80) in top portion
     wire [6:0] wr_col = fb_wr_addr[6:0];
     wire [5:0] wr_row = fb_wr_addr[12:7];
-    wire wr_is_stuck = (wr_col == 7'd37) || (wr_col == 7'd38) || (wr_col == 7'd39) ||
-                       (wr_col == 7'd52) || (wr_col == 7'd53) || (wr_col == 7'd54) ||
-                       (wr_col == 7'd59);
-    wire wr_pin_val = (wr_col < 7'd67) ? pin_result[wr_col] : 1'b0;
-    wire [7:0] wr_pin_byte = wr_pin_val ? 8'hFF : 8'h00;
 
-    // Cursor trail: brightness from distance to scan_idx (255 >> dist, fades in 8 steps)
-    wire [6:0] cursor_dist = (scan_idx >= wr_col) ? (scan_idx - wr_col)
-                                                   : (scan_idx + 7'd67 - wr_col);
-    wire [7:0] wr_cursor = (wr_col < 7'd67 && cursor_dist < 7'd8) ? (8'hFF >> cursor_dist) : 8'h00;
-    wire [7:0] wr_knocked = (wr_pin_byte > wr_cursor) ? (wr_pin_byte - wr_cursor) : 8'h00;
-
-    // Ruler: 2px per bit, bits 0-6 of column index
-    wire [2:0] ruler_bit = (wr_row - 6'd34) >> 1;  // rows 34-49 → bit index 0-7
-    wire ruler_val = (ruler_bit < 3'd7 && wr_col < 7'd67) ? wr_col[ruler_bit] : 1'b0;
-
-    // Glyph display: 16x16 centered at cols 56-71, rows 48-63
-    wire glyph_active = (btn_id != 5'd0) && (wr_row >= 6'd48) &&
+    // Live press glyph: 16x16 centered (rows 24-39, cols 56-71)
+    wire glyph_active = (btn_id != 5'd0) &&
+                        (wr_row >= 6'd24) && (wr_row < 6'd40) &&
                         (wr_col >= 7'd56) && (wr_col < 7'd72);
-    wire [3:0] glyph_row = wr_row - 6'd48;
-    wire [3:0] glyph_col = wr_col - 7'd56;
-    wire [12:0] glyph_addr = {btn_id - 5'd1, glyph_row, glyph_col};
-    wire [7:0] glyph_pixel = glyph_rom[glyph_addr];
+    wire [3:0] glyph_y = wr_row - 6'd24;
+    wire [3:0] glyph_x = wr_col - 7'd56;
+    wire [12:0] glyph_addr = {btn_id - 5'd1, glyph_y, glyph_x};
+    wire [7:0] glyph_pixel = (btn_id != 5'd0) ? glyph_rom[glyph_addr] : 8'h00;
 
-    wire [7:0] fb_wr_pixel =
-        // Rows 0-15: grey marker (0x80) for stuck, else pin state
-        (wr_row < 6'd16) ? (wr_is_stuck ? 8'h80 : wr_pin_byte) :
-        // Rows 16-31: live pin state
-        (wr_row < 6'd32) ? wr_pin_byte :
-        // Rows 32-33: 2px cursor trail (white fading to black over 8 columns)
-        (wr_row < 6'd34) ? wr_cursor :
-        // Rows 34-47: binary ruler (2px per bit, 7 bits)
-        (wr_row < 6'd48) ? (ruler_val ? 8'hFF : 8'h00) :
-        // Rows 48-63: glyph display (16x16 centered) or ruler remainder
-        glyph_active ? glyph_pixel : 8'h00;
+    wire [7:0] fb_wr_pixel = glyph_active ? glyph_pixel : 8'h00;
 
     reg [12:0] fb_wr_addr = 0;
     always @(posedge clk) begin
