@@ -206,7 +206,7 @@ module top_pin_scan #(
         else if (&geiger_cnt[7:0]) begin
             if (!ext_led_state && trng_out < 8'd1)
                 ext_led_state <= 1'b1;
-            else if (ext_led_state && trng_out < 8'd254)
+            else if (ext_led_state && trng_out < 8'd255)
                 ext_led_state <= 1'b0;
         end
     end
@@ -246,9 +246,32 @@ module top_pin_scan #(
         5'd0;  // none
 
     // =========================================================================
-    // Glyph ROM — 18 glyphs × 16×16 × 8bpp = 4608 bytes
+    // Shift logic — · toggles shift on RELEASE, shifted button clears on RELEASE
     // =========================================================================
-    reg [7:0] glyph_rom [0:4607];
+    // Shift = chord: hold · + press button = shifted. · alone = decimal.
+    // If · released while button still held, stay shifted.
+    wire dot_held = !pin_result[57];
+
+    reg was_shifted = 0;  // latches when a chord starts, clears on button release
+
+    always @(posedge clk) begin
+        if (dot_held && btn_id != 5'd0 && btn_id != 5'd18)
+            was_shifted <= 1;
+        if (btn_id == 5'd0)
+            was_shifted <= 0;
+    end
+
+    wire shifted = dot_held || was_shifted;
+
+    wire [5:0] glyph_slot =
+        (shifted && btn_id != 5'd0 && btn_id != 5'd18) ? (btn_id + 6'd17) :
+        (btn_id != 5'd0) ? (btn_id - 6'd1) :
+        6'd0;
+
+    // =========================================================================
+    // Glyph ROM — 36 glyphs × 16×16 × 8bpp = 9216 bytes
+    // =========================================================================
+    reg [7:0] glyph_rom [0:9215];
     initial $readmemh("glyphs.mem", glyph_rom);
 
     // =========================================================================
@@ -265,10 +288,19 @@ module top_pin_scan #(
                         (wr_col >= 7'd56) && (wr_col < 7'd72);
     wire [3:0] glyph_y = wr_row - 6'd24;
     wire [3:0] glyph_x = wr_col - 7'd56;
-    wire [12:0] glyph_addr = {btn_id - 5'd1, glyph_y, glyph_x};
-    wire [7:0] glyph_pixel = (btn_id != 5'd0) ? glyph_rom[glyph_addr] : 8'h00;
 
-    wire [7:0] fb_wr_pixel = glyph_active ? glyph_pixel : 8'h00;
+    wire [13:0] glyph_addr = {glyph_slot, glyph_y, glyph_x};
+    wire [7:0] glyph_pixel = (btn_id != 5'd0 || dot_held) ? glyph_rom[glyph_addr] : 8'h00;
+
+    wire glyph_show = glyph_active && (btn_id != 5'd0 || dot_held);
+
+    // 1px white border outside the 16x16 glyph (18x18 outline)
+    wire border_active = ((wr_row >= 6'd23) && (wr_row < 6'd41) &&
+                          (wr_col >= 7'd55) && (wr_col < 7'd73)) &&
+                         ((wr_row == 6'd23) || (wr_row == 6'd40) ||
+                          (wr_col == 7'd55) || (wr_col == 7'd72));
+
+    wire [7:0] fb_wr_pixel = glyph_show ? glyph_pixel : border_active ? 8'hFF : 8'h00;
 
     reg [12:0] fb_wr_addr = 0;
     always @(posedge clk) begin
