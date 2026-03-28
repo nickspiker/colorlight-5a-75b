@@ -291,7 +291,7 @@ module top_pin_scan #(
     // =========================================================================
     // Glyph ROM — 36 glyphs × 16×16 × 8bpp = 9216 bytes
     // =========================================================================
-    reg [7:0] glyph_rom [0:9215];
+    reg [7:0] glyph_rom [0:9983];  // 39 glyphs × 256 bytes
     initial $readmemh("glyphs.mem", glyph_rom);
 
     // =========================================================================
@@ -422,6 +422,7 @@ module top_pin_scan #(
     reg pending_valid = 0;
 
     always @(posedge clk) begin
+        conv_start <= 0;  // self-clearing pulse
         if (was_locked && !display_locked) begin
             if (is_ce) begin
                 // Erase last digit
@@ -448,11 +449,12 @@ module top_pin_scan #(
                     entry_len <= entry_len + 1;
                 end
                 pending_valid <= 0;
-            end else if (is_negate) begin
-                // TODO: toggle sign of entry or X register
-                pending_valid <= 0;
-            end else if (is_operator) begin
-                // TODO: auto-enter if digits pending, then compute
+            end else if (is_negate || is_operator) begin
+                // If entry has digits, auto-enter first
+                if (entry_len > 0) begin
+                    conv_start <= 1;
+                end
+                // Latch operator for dispatch (handled in calc dispatch block)
                 pending_op <= display_slot;
                 pending_valid <= 1;
             end
@@ -531,7 +533,6 @@ module top_pin_scan #(
                     conv_dec_pos <= 0;
                     conv_saw_dec <= 0;
                     conv_negative <= 0;
-                    conv_start <= 0;
                     conv_state <= C_ACCUM;
                 end
             end
@@ -589,6 +590,52 @@ module top_pin_scan #(
                 conv_state <= C_IDLE;
             end
         endcase
+    end
+
+    // =========================================================================
+    // Calculator core — ALU instances + operator FSM
+    // =========================================================================
+    reg [5:0]  calc_op_slot = 0;
+    reg        calc_op_start = 0;
+    wire       calc_busy;
+    wire       calc_done;
+    wire [31:0] calc_res_frac;
+    wire signed [15:0] calc_res_exp;
+    wire       calc_is_binary;
+
+    spirix_calc_core u_calc (
+        .clk(clk),
+        .stk_x_frac(stack_frac[0]), .stk_x_exp(stack_exp[0]),
+        .stk_y_frac(stack_frac[1]), .stk_y_exp(stack_exp[1]),
+        .stk_depth(stack_depth),
+        .op_slot(calc_op_slot), .op_start(calc_op_start),
+        .op_busy(calc_busy), .op_done(calc_done),
+        .res_frac(calc_res_frac), .res_exp(calc_res_exp),
+        .res_is_binary(calc_is_binary)
+    );
+
+    // Calc dispatch: combinational — fires when pending_valid + ready
+    wire calc_ready = pending_valid && !calc_busy && (conv_state == C_IDLE);
+    always @(posedge clk) begin
+        calc_op_start <= calc_ready;
+        if (calc_ready)
+            calc_op_slot <= pending_op;
+    end
+
+    // Calc done → write result back to stack
+    always @(posedge clk) begin
+        if (calc_done) begin
+            stack_frac[0] <= calc_res_frac;
+            stack_exp[0] <= calc_res_exp;
+            if (calc_is_binary && stack_depth > 1) begin
+                // Binary op consumed Y: shift stack down
+                stack_frac[1] <= stack_frac[2];
+                stack_exp[1] <= stack_exp[2];
+                stack_frac[2] <= stack_frac[3];
+                stack_exp[2] <= stack_exp[3];
+                stack_depth <= stack_depth - 1;
+            end
+        end
     end
 
     // =========================================================================

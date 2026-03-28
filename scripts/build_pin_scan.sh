@@ -29,8 +29,16 @@ echo "CLK_DIV=$CLKDIV  I2C=${I2C_KHZ}kHz"
 
 echo "--- Synthesise ---"
 cd "$BUILD"
+ALU="$ROOT/../spirix/fpga/cores/ops"
 yosys -p "
     read_verilog $RTL/ssd1306_i2c.v
+    read_verilog $RTL/spirix_calc_core.v
+    read_verilog $ALU/spirix_neg.v
+    read_verilog $ALU/spirix_alu_basic.v
+    read_verilog $ALU/spirix_alu_addbit.v
+    read_verilog $ALU/spirix_alu_multiply.v
+    read_verilog $ALU/spirix_alu_divmodsqrt.v
+    read_verilog $ALU/spirix_alu_round.v
     read_verilog $RTL/top_pin_scan.v
     chparam -set CLK_DIV $CLKDIV top_pin_scan
     synth_ecp5 -nowidelut -abc2 -top top_pin_scan -json $BUILD/pin_scan.json
