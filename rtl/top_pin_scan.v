@@ -142,17 +142,18 @@ module top_pin_scan #(
     always @(posedge clk) begin
         if (scan_tick) begin
             pin_result[scan_idx] <= pin_in[scan_idx];
+            // Columns first, then rows — prevents ghost multiply on col62 release
             case (btn_scan)
-                4'd0: scan_idx <= 7'd27;
-                4'd1: scan_idx <= 7'd28;
-                4'd2: scan_idx <= 7'd44;
-                4'd3: scan_idx <= 7'd49;
-                4'd4: scan_idx <= 7'd50;
-                4'd5: scan_idx <= 7'd51;
-                4'd6: scan_idx <= 7'd56;
-                4'd7: scan_idx <= 7'd57;
-                4'd8: scan_idx <= 7'd62;
-                default: scan_idx <= 7'd63;
+                4'd0: scan_idx <= 7'd62;
+                4'd1: scan_idx <= 7'd63;
+                4'd2: scan_idx <= 7'd49;
+                4'd3: scan_idx <= 7'd56;
+                4'd4: scan_idx <= 7'd27;
+                4'd5: scan_idx <= 7'd28;
+                4'd6: scan_idx <= 7'd44;
+                4'd7: scan_idx <= 7'd50;
+                4'd8: scan_idx <= 7'd51;
+                default: scan_idx <= 7'd57;
             endcase
             btn_scan <= (btn_scan == 4'd9) ? 4'd0 : btn_scan + 1;
         end
@@ -203,7 +204,7 @@ module top_pin_scan #(
         // Multi-press: count LOW button pins (excl p57). Single = 2, p50/p51 coupling = 3.
         // 4+ = multi-press.
         // ext_led: solid ON = single press, OFF = multi-press, geiger = idle
-        if (btn_id != 5'd0) begin
+        if (eff_btn != 5'd0) begin
             if ((!pin_result[27]) + (!pin_result[28]) + (!pin_result[44]) +
                 (!pin_result[49]) + (!pin_result[50]) + (!pin_result[51]) +
                 (!pin_result[56]) + (!pin_result[62]) + (!pin_result[63]) > 4'd3)
@@ -247,10 +248,11 @@ module top_pin_scan #(
         (p28L && p56L) ? 5'd14 :  // +
         (p50L && p63L) ? 5'd15 :  // ÷
         (p51L && p56L) ? 5'd16 :  // ↑ (enter)
-        // GND buttons (swapped: * on 62, · on 57)
-        (p62L && !p27L && !p28L && !p44L && !p50L && !p51L) ? 5'd17 :  // * (multiply)
-        (p57L) ? 5'd18 :  // · (decimal / shift)
-        5'd0;  // none
+        // · (GND+57)
+        (p57L) ? 5'd18 :
+        // Multiply NOT in combinational decoder — detected from sampled data only
+        // (p62L && !all_rows fires as ghost during any col62 button scan)
+        5'd0;
 
     // =========================================================================
     // Shift logic — · toggles shift on RELEASE, shifted button clears on RELEASE
@@ -264,12 +266,12 @@ module top_pin_scan #(
 
     always @(posedge clk) begin
         // Chord start: · held + button pressed
-        if (dot_held && btn_id != 5'd0 && btn_id != 5'd18) begin
+        if (dot_held && eff_btn != 5'd0 && eff_btn != 5'd18) begin
             was_shifted <= 1;
-            held_slot <= btn_id + 6'd17;
+            held_slot <= eff_btn + 6'd17;
         end
         // Button released (without ·): clear shift
-        if (!dot_held && btn_id == 5'd0)
+        if (!dot_held && eff_btn == 5'd0)
             was_shifted <= 0;
         // · released: clear held slot
         if (!dot_held)
@@ -279,9 +281,9 @@ module top_pin_scan #(
     wire shifted = dot_held || was_shifted;
 
     wire [5:0] glyph_slot =
-        (shifted && btn_id != 5'd0 && btn_id != 5'd18) ? (btn_id + 6'd17) :  // active chord press
-        (dot_held && held_slot != 6'd0) ? held_slot :                          // · held, button released
-        (btn_id != 5'd0) ? (btn_id - 6'd1) :                                  // primary
+        (shifted && eff_btn != 5'd0 && eff_btn != 5'd18) ? (eff_btn + 6'd17) :
+        (dot_held && held_slot != 6'd0) ? held_slot :
+        (eff_btn != 5'd0) ? (eff_btn - 6'd1) :
         6'd0;
 
     // =========================================================================
@@ -294,6 +296,10 @@ module top_pin_scan #(
     // 8bpp Framebuffer (8192 bytes, 128×64)
     // =========================================================================
     reg [7:0] fb [0:8191];
+    initial begin : fb_init
+        integer i;
+        for (i = 0; i < 8192; i = i + 1) fb[i] = 8'd0;
+    end
 
     wire [6:0] wr_col = fb_wr_addr[6:0];
     wire [5:0] wr_row = fb_wr_addr[12:7];
@@ -305,49 +311,79 @@ module top_pin_scan #(
     reg display_locked = 0;
     reg prev_dot_held = 0;
     reg was_locked = 0;    // edge detect for commit
-    reg seen_idle = 1;     // must see btn_id==0 before allowing new lock
 
     // Sample btn_id only at end of full scan cycle (all 10 pins fresh)
-    wire scan_complete = scan_tick && (btn_scan == 4'd9);
+    // Sample at btn_scan==0: all previous pins (62,63,49,56,27,28,44,50,51)
+    // have had their non-blocking assignments take effect. No stale data.
+    wire scan_complete = scan_tick && (btn_scan == 4'd0);
     reg [4:0] sampled_btn = 0;
     reg [4:0] prev_sampled = 0;
     always @(posedge clk) begin
         if (scan_complete) begin
             prev_sampled <= sampled_btn;
-            sampled_btn <= btn_id;
+            sampled_btn <= eff_btn;
         end
     end
     // Stable = same btn_id for 2 full scan cycles
     wire btn_stable = (sampled_btn == prev_sampled);
 
+    // Multiply: detected only at scan_complete (all pins fresh, no race)
+    reg mul_detected = 0;
+    always @(posedge clk) begin
+        if (scan_complete)
+            // btn_id==0 or 18 (· held): no matrix button, just p62 LOW = multiply
+            mul_detected <= ((btn_id == 5'd0 || btn_id == 5'd18) && p62L && !p27L && !p28L && !p44L && !p50L && !p51L);
+    end
+
+    // Effective btn_id: merge sampled multiply with live decoder
+    wire [4:0] eff_btn = mul_detected ? 5'd17 : btn_id;
+
+    // Also sample glyph_slot at scan_complete (all pins fresh, no race)
+    // Use eff_btn for glyph computation at sample time
+    reg [5:0] sampled_glyph = 0;
+    always @(posedge clk) begin
+        if (scan_complete) begin
+            sampled_glyph <=
+                (shifted && eff_btn != 5'd0 && eff_btn != 5'd18) ? (eff_btn + 6'd17) :
+                (dot_held && held_slot != 6'd0) ? held_slot :
+                (eff_btn != 5'd0) ? (eff_btn - 6'd1) :
+                6'd0;
+        end
+    end
+    // Idle ready: set when sampled_btn==0 for 2 full cycles, clear on lock
+    wire idle_confirmed = (sampled_btn == 5'd0) && (prev_sampled == 5'd0);
+    reg idle_ready = 1;
+    always @(posedge clk) begin
+        if (idle_confirmed)
+            idle_ready <= 1;
+        if (display_locked)
+            idle_ready <= 0;
+    end
+
     always @(posedge clk) begin
         prev_dot_held <= dot_held;
         was_locked <= display_locked;
 
-        // Track idle: must see all released before new lock
-        if (btn_id == 5'd0 && !dot_held)
-            seen_idle <= 1;
-
-        // Lock when stable across 2 full scan cycles
-        if (!display_locked && seen_idle && btn_stable &&
+        // Lock when btn stable for 2 scan cycles AND idle was confirmed
+        // idle_confirmed = sampled_btn==0 for 2 full cycles — kills scan-race ghosts
+        if (!display_locked && idle_ready && btn_stable &&
             sampled_btn != 5'd0) begin
-            display_slot <= glyph_slot;
+            display_slot <= sampled_glyph;  // captured at scan_complete, all pins fresh
             display_locked <= 1;
-            seen_idle <= 0;
         end
         // Upgrade: · held + button appears while locked on decimal → shifted
         // Also: button held + · added → shifted
-        if (display_locked && dot_held && btn_id != 5'd0 && btn_id != 5'd18 &&
+        if (display_locked && dot_held && eff_btn != 5'd0 && eff_btn != 5'd18 &&
             (display_slot == 6'd17 || !prev_dot_held))
-            display_slot <= btn_id + 6'd17;
+            display_slot <= eff_btn + 6'd17;
         // Full release: clear lock
-        if (btn_id == 5'd0 && !dot_held)
+        if (eff_btn == 5'd0 && !dot_held)
             display_locked <= 0;
     end
 
     // Show locked slot if locked, otherwise live glyph_slot (for · preview)
     wire [5:0] active_slot = display_locked ? display_slot : glyph_slot;
-    wire active_valid = display_locked || (btn_id != 5'd0) || (dot_held && held_slot != 6'd0);
+    wire active_valid = display_locked || (eff_btn != 5'd0) || (dot_held && held_slot != 6'd0);
 
     // =========================================================================
     // History buffer — commit on release (locked→unlocked edge)
@@ -405,7 +441,7 @@ module top_pin_scan #(
     wire [13:0] glyph_addr = {render_slot, render_y, render_x};
     wire [7:0] glyph_pixel = render_valid ? glyph_rom[glyph_addr] : 8'h00;
 
-    wire [7:0] fb_wr_pixel = render_valid ? glyph_pixel : 8'h00;
+    wire [7:0] fb_wr_pixel = {8{render_valid}} & glyph_pixel;
 
     reg [12:0] fb_wr_addr = 0;
     always @(posedge clk) begin
@@ -635,7 +671,7 @@ module top_pin_scan #(
             ST_GATHER: begin
                 gather_cnt <= gather_cnt + 1;
                 if (gather_cnt >= 4'd1) begin
-                    px_byte <= {(fb_dout > trng_out), px_byte[7:1]};
+                    px_byte <= {(|fb_dout && fb_dout > trng_out), px_byte[7:1]};
                 end
                 if (gather_cnt == 4'd8) begin
                     gather_cnt <= 0;
