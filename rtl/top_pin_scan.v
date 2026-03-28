@@ -386,55 +386,120 @@ module top_pin_scan #(
     // =========================================================================
     // History buffer — commit on release (locked→unlocked edge)
     // =========================================================================
-    reg [5:0] history [0:7];  // 8 slots
-    reg [3:0] hist_len = 0;
+    // Four display lines: T (top), Z, Y, X/entry (bottom)
+    // Entry buffer: 16 slots (digits can go off-screen left)
+    // Stack lines: 16 slots each (will hold formatted scalars later)
+    reg [5:0] entry [0:15];
+    reg [4:0] entry_len = 0;
+    reg [5:0] line_y [0:15];
+    reg [4:0] y_len = 0;
+    reg [5:0] line_z [0:15];
+    reg [4:0] z_len = 0;
+    reg [5:0] line_t [0:15];
+    reg [4:0] t_len = 0;
+
     integer hi;
-    initial for (hi = 0; hi < 8; hi = hi + 1) history[hi] = 6'd0;
+    initial begin
+        for (hi = 0; hi < 16; hi = hi + 1) begin
+            entry[hi] = 6'd0;
+            line_y[hi] = 6'd0;
+            line_z[hi] = 6'd0;
+            line_t[hi] = 6'd0;
+        end
+    end
+
+    // Classify committed glyph slots
+    wire is_digit  = (display_slot <= 6'd11) || (display_slot == 6'd17);  // 0-11 = dozenal, 17 = decimal
+    wire is_enter  = (display_slot == 6'd15);
+    wire is_ce     = (display_slot == 6'd30);  // clear entry (erase last)
+    wire is_clear  = (display_slot == 6'd33);  // clear all
+    wire is_negate = (display_slot == 6'd12);  // toggle sign
+    // Everything else = operator (add, subtract, multiply, divide, etc.)
+    wire is_operator = !is_digit && !is_enter && !is_ce && !is_clear && !is_negate;
+
+    // Pending operator (flashes on live display, later triggers computation)
+    reg [5:0] pending_op = 0;
+    reg pending_valid = 0;
 
     always @(posedge clk) begin
         if (was_locked && !display_locked) begin
-            if (hist_len < 4'd8) begin
-                history[hist_len[2:0]] <= display_slot;
-                hist_len <= hist_len + 1;
-            end else begin
-                // Scroll left
-                history[0] <= history[1];
-                history[1] <= history[2];
-                history[2] <= history[3];
-                history[3] <= history[4];
-                history[4] <= history[5];
-                history[5] <= history[6];
-                history[6] <= history[7];
-                history[7] <= display_slot;
+            if (is_ce) begin
+                // Erase last digit
+                if (entry_len > 0)
+                    entry_len <= entry_len - 1;
+                pending_valid <= 0;
+            end else if (is_clear) begin
+                // Clear everything
+                entry_len <= 0;
+                y_len <= 0;
+                z_len <= 0;
+                t_len <= 0;
+                pending_valid <= 0;
+                pending_op <= 0;
+            end else if (is_enter) begin
+                // Push: entry→Y, Y→Z, Z→T (T falls off)
+                if (entry_len > 0) begin
+                    for (hi = 0; hi < 16; hi = hi + 1) line_t[hi] <= line_z[hi];
+                    t_len <= z_len;
+                    for (hi = 0; hi < 16; hi = hi + 1) line_z[hi] <= line_y[hi];
+                    z_len <= y_len;
+                    for (hi = 0; hi < 16; hi = hi + 1) line_y[hi] <= entry[hi];
+                    y_len <= entry_len;
+                    entry_len <= 0;
+                end
+                pending_valid <= 0;
+            end else if (is_digit) begin
+                // Append digit to entry line (max 16)
+                if (entry_len < 5'd16) begin
+                    entry[entry_len[3:0]] <= display_slot;
+                    entry_len <= entry_len + 1;
+                end
+                pending_valid <= 0;
+            end else if (is_negate) begin
+                // TODO: toggle sign of entry or X register
+                pending_valid <= 0;
+            end else if (is_operator) begin
+                // TODO: auto-enter if digits pending, then compute
+                pending_op <= display_slot;
+                pending_valid <= 1;
             end
         end
     end
 
     // =========================================================================
-    // Display: 8 glyphs across (16px each = 128px), vertically centered
+    // Display: 4 lines × 8 visible glyphs, right-aligned, 16px each
     // =========================================================================
-    // History row: rows 24-39, full width
-    wire in_hist_band = (wr_row >= 6'd24) && (wr_row < 6'd40);
-    wire [3:0] glyph_y = wr_row - 6'd24;
-    wire [2:0] hist_col = wr_col[6:4];  // 0-7, each 16px wide
-    wire [3:0] glyph_x = wr_col[3:0];   // 0-15 within each slot
+    // T: rows 0-15, Z: rows 16-31, Y: rows 32-47, X/entry: rows 48-63
+    wire [2:0] glyph_col = wr_col[6:4];  // 0-7 display column
+    wire [3:0] glyph_x = wr_col[3:0];    // 0-15 within slot
+    wire [3:0] glyph_y = wr_row[3:0];    // 0-15 within line
+    wire [1:0] line_sel = wr_row[5:4];   // 0=T, 1=Z, 2=Y, 3=X
 
-    wire hist_in_range = ({1'b0, hist_col} < hist_len);
-    wire [5:0] hist_slot = hist_in_range ? history[hist_col] : 6'd0;
-    wire hist_valid = in_hist_band && hist_in_range;
+    // Right-aligned index: display col + len - 8. Valid when col + len >= 8.
+    // Shows rightmost 8 of up to 16 stored glyphs.
+    wire [4:0] t_idx = {2'b0, glyph_col} + t_len - 5'd8;
+    wire [4:0] z_idx = {2'b0, glyph_col} + z_len - 5'd8;
+    wire [4:0] y_idx = {2'b0, glyph_col} + y_len - 5'd8;
+    wire [4:0] e_idx = {2'b0, glyph_col} + entry_len - 5'd8;
 
-    // Live press: bottom row (rows 46-61), rightmost 16px (cols 112-127)
-    wire live_band = active_valid &&
-                     (wr_row >= 6'd46) && (wr_row < 6'd62) &&
-                     (wr_col >= 7'd112) && (wr_col < 7'd128);
-    wire [3:0] live_y = wr_row - 6'd46;
-    wire [3:0] live_x = wr_col - 7'd112;
+    wire t_valid = ({2'b0, glyph_col} + t_len >= 5'd8) && (t_len > 0);
+    wire z_valid = ({2'b0, glyph_col} + z_len >= 5'd8) && (z_len > 0);
+    wire y_valid = ({2'b0, glyph_col} + y_len >= 5'd8) && (y_len > 0);
+    wire e_valid = ({2'b0, glyph_col} + entry_len >= 5'd8) && (entry_len > 0);
 
-    // Glyph ROM lookup: history or live
-    wire [5:0] render_slot = live_band ? active_slot : hist_slot;
-    wire [3:0] render_y = live_band ? live_y : glyph_y;
-    wire [3:0] render_x = live_band ? live_x : glyph_x;
-    wire render_valid = live_band || hist_valid;
+    wire [5:0] t_slot = t_valid ? line_t[t_idx[3:0]] : 6'd0;
+    wire [5:0] z_slot = z_valid ? line_z[z_idx[3:0]] : 6'd0;
+    wire [5:0] y_slot = y_valid ? line_y[y_idx[3:0]] : 6'd0;
+    wire [5:0] e_slot = e_valid ? entry[e_idx[3:0]] : 6'd0;
+
+    wire [5:0] render_slot = (line_sel == 2'd0) ? t_slot :
+                             (line_sel == 2'd1) ? z_slot :
+                             (line_sel == 2'd2) ? y_slot : e_slot;
+    wire render_valid = (line_sel == 2'd0) ? t_valid :
+                        (line_sel == 2'd1) ? z_valid :
+                        (line_sel == 2'd2) ? y_valid : e_valid;
+    wire [3:0] render_y = glyph_y;
+    wire [3:0] render_x = glyph_x;
 
     wire [13:0] glyph_addr = {render_slot, render_y, render_x};
     wire [7:0] glyph_pixel = render_valid ? glyph_rom[glyph_addr] : 8'h00;
