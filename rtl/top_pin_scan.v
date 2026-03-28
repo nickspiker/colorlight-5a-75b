@@ -291,7 +291,7 @@ module top_pin_scan #(
     // =========================================================================
     // Glyph ROM — 36 glyphs × 16×16 × 8bpp = 9216 bytes
     // =========================================================================
-    reg [7:0] glyph_rom [0:9983];  // 39 glyphs × 256 bytes
+    reg [7:0] glyph_rom [0:16383];  // 39 glyphs × 256 bytes (oversized for address space)
     initial $readmemh("glyphs.mem", glyph_rom);
 
     // =========================================================================
@@ -430,9 +430,8 @@ module top_pin_scan #(
                     entry_len <= entry_len - 1;
                 pending_valid <= 0;
             end else if (is_clear) begin
-                // Clear everything
+                // Clear everything (y_len cleared in formatter block via signal)
                 entry_len <= 0;
-                y_len <= 0;
                 z_len <= 0;
                 t_len <= 0;
                 pending_valid <= 0;
@@ -460,14 +459,12 @@ module top_pin_scan #(
             end
         end
 
-        // Conversion done → push stack and clear entry
+        // Conversion done → clear entry, shift display up
         if (conv_done) begin
             for (hi = 0; hi < 16; hi = hi + 1) line_t[hi] <= line_z[hi];
             t_len <= z_len;
             for (hi = 0; hi < 16; hi = hi + 1) line_z[hi] <= line_y[hi];
             z_len <= y_len;
-            for (hi = 0; hi < 16; hi = hi + 1) line_y[hi] <= entry[hi];
-            y_len <= entry_len;
             entry_len <= 0;
             pending_valid <= 0;
         end
@@ -508,20 +505,25 @@ module top_pin_scan #(
 
     assign conv_done = (conv_state == C_DONE);
 
-    // Combinational CLZ on 48-bit conv_acc
+    // Combinational CLZ on 48-bit conv_acc (handles 0-47 leading zeros)
     wire [5:0] clz_val;
     wire [47:0] clz_shifted;
-    wire [47:0] clz_s0 = conv_acc[47:32] ? conv_acc : {conv_acc[31:0], 16'd0};
-    wire [4:0]  clz_c0 = conv_acc[47:32] ? 5'd0 : 5'd16;
-    wire [47:0] clz_s1 = clz_s0[47:40] ? clz_s0 : {clz_s0[39:0], 8'd0};
-    wire [4:0]  clz_c1 = clz_s0[47:40] ? clz_c0 : clz_c0 + 5'd8;
-    wire [47:0] clz_s2 = clz_s1[47:44] ? clz_s1 : {clz_s1[43:0], 4'd0};
-    wire [4:0]  clz_c2 = clz_s1[47:44] ? clz_c1 : clz_c1 + 5'd4;
-    wire [47:0] clz_s3 = clz_s2[47:46] ? clz_s2 : {clz_s2[45:0], 2'd0};
-    wire [4:0]  clz_c3 = clz_s2[47:46] ? clz_c2 : clz_c2 + 5'd2;
-    wire [47:0] clz_s4 = clz_s3[47]    ? clz_s3 : {clz_s3[46:0], 1'd0};
-    wire [4:0]  clz_c4 = clz_s3[47]    ? clz_c3 : clz_c3 + 5'd1;
-    assign clz_val = {1'b0, clz_c4};
+    // Stage 0: check top 16 bits (shift 32 if all zero in top 32)
+    wire [47:0] clz_s0 = |conv_acc[47:16] ? conv_acc : {conv_acc[15:0], 32'd0};
+    wire [5:0]  clz_c0 = |conv_acc[47:16] ? 6'd0 : 6'd32;
+    // Stage 1: check top 8 of remaining
+    wire [47:0] clz_s1 = |clz_s0[47:40] ? clz_s0 : {clz_s0[39:0], 8'd0};
+    wire [5:0]  clz_c1 = |clz_s0[47:40] ? clz_c0 : clz_c0 + 6'd8;
+    // Stage 2: check top 4
+    wire [47:0] clz_s2 = |clz_s1[47:44] ? clz_s1 : {clz_s1[43:0], 4'd0};
+    wire [5:0]  clz_c2 = |clz_s1[47:44] ? clz_c1 : clz_c1 + 6'd4;
+    // Stage 3: check top 2
+    wire [47:0] clz_s3 = |clz_s2[47:46] ? clz_s2 : {clz_s2[45:0], 2'd0};
+    wire [5:0]  clz_c3 = |clz_s2[47:46] ? clz_c2 : clz_c2 + 6'd2;
+    // Stage 4: check top 1
+    wire [47:0] clz_s4 = clz_s3[47]     ? clz_s3 : {clz_s3[46:0], 1'd0};
+    wire [5:0]  clz_c4 = clz_s3[47]     ? clz_c3 : clz_c3 + 6'd1;
+    assign clz_val = clz_c4;
     assign clz_shifted = clz_s4;
 
     always @(posedge clk) begin
@@ -564,23 +566,18 @@ module top_pin_scan #(
                     result_frac <= 0;
                     result_exp <= 0;
                 end else begin
-                    // shifted[47] = leading 1. Take bits [47:16] as 32-bit N1 fraction.
-                    result_frac <= conv_negative ? -clz_shifted[47:16] : clz_shifted[47:16];
-                    // Exponent: value = frac * 2^exp. N1 has implicit point at bit 30.
-                    // exp = (47 - clz_val) - 30
-                    result_exp <= $signed({10'd0, 6'd47 - clz_val}) - 16'sd30;
+                    // N1 positive: 0_1xxxxx. Shift so leading 1 is at bit 30 (not 31).
+                    // clz_shifted has leading 1 at bit 47. Take [47:17] = 31 data bits,
+                    // prepend 0 sign bit.
                 end
 
-                // Push to scalar stack
-                stack_frac[3] <= stack_frac[2]; stack_exp[3] <= stack_exp[2];
-                stack_frac[2] <= stack_frac[1]; stack_exp[2] <= stack_exp[1];
-                stack_frac[1] <= stack_frac[0]; stack_exp[1] <= stack_exp[0];
-                stack_frac[0] <= (conv_acc == 0) ? 32'd0 :
-                                 (conv_negative ? -clz_shifted[47:16] : clz_shifted[47:16]);
-                stack_exp[0]  <= (conv_acc == 0) ? 16'sd0 :
-                                 ($signed({10'd0, 6'd47 - clz_val}) - 16'sd30);
-                if (stack_depth < 3'd4)
-                    stack_depth <= stack_depth + 1;
+                // Result (stack push happens in unified stack block below)
+                // value = (frac / 2^30) * 2^exp. Converter exp = 47 - clz_val.
+                result_frac <= (conv_acc == 0) ? 32'd0 :
+                               (conv_negative ? -{1'b0, clz_shifted[47:17]}
+                                              :  {1'b0, clz_shifted[47:17]});
+                result_exp  <= (conv_acc == 0) ? 16'sd0 :
+                               $signed({10'd0, 6'd47 - clz_val});
 
                 conv_state <= C_DONE;
             end
@@ -603,6 +600,15 @@ module top_pin_scan #(
     wire signed [15:0] calc_res_exp;
     wire       calc_is_binary;
 
+    // Formatter signals
+    reg        fmt_start_pulse = 0;
+    wire       fmt_busy_w;
+    wire       fmt_done_w;
+    wire [5:0] fmt_glyph_w;
+    wire [3:0] fmt_pos_w;
+    wire       fmt_wr_w;
+    wire [4:0] fmt_len_w;
+
     spirix_calc_core u_calc (
         .clk(clk),
         .stk_x_frac(stack_frac[0]), .stk_x_exp(stack_exp[0]),
@@ -611,7 +617,12 @@ module top_pin_scan #(
         .op_slot(calc_op_slot), .op_start(calc_op_start),
         .op_busy(calc_busy), .op_done(calc_done),
         .res_frac(calc_res_frac), .res_exp(calc_res_exp),
-        .res_is_binary(calc_is_binary)
+        .res_is_binary(calc_is_binary),
+        // Formatter
+        .fmt_frac(stack_frac[0]), .fmt_exp(stack_exp[0]),
+        .fmt_start(fmt_start_pulse), .fmt_busy(fmt_busy_w), .fmt_done(fmt_done_w),
+        .fmt_glyph(fmt_glyph_w), .fmt_pos(fmt_pos_w), .fmt_wr(fmt_wr_w),
+        .fmt_len(fmt_len_w)
     );
 
     // Calc dispatch: combinational — fires when pending_valid + ready
@@ -622,13 +633,22 @@ module top_pin_scan #(
             calc_op_slot <= pending_op;
     end
 
-    // Calc done → write result back to stack
+    // Unified stack management — single driver for all stack regs
     always @(posedge clk) begin
+        if (conv_done) begin
+            // Push: shift stack up, put converted value in X
+            stack_frac[3] <= stack_frac[2]; stack_exp[3] <= stack_exp[2];
+            stack_frac[2] <= stack_frac[1]; stack_exp[2] <= stack_exp[1];
+            stack_frac[1] <= stack_frac[0]; stack_exp[1] <= stack_exp[0];
+            stack_frac[0] <= result_frac;   stack_exp[0] <= result_exp;
+            if (stack_depth < 3'd4)
+                stack_depth <= stack_depth + 1;
+        end
         if (calc_done) begin
+            // Operator result → X
             stack_frac[0] <= calc_res_frac;
             stack_exp[0] <= calc_res_exp;
             if (calc_is_binary && stack_depth > 1) begin
-                // Binary op consumed Y: shift stack down
                 stack_frac[1] <= stack_frac[2];
                 stack_exp[1] <= stack_exp[2];
                 stack_frac[2] <= stack_frac[3];
@@ -636,6 +656,30 @@ module top_pin_scan #(
                 stack_depth <= stack_depth - 1;
             end
         end
+    end
+
+    // Formatter trigger: format stack[0] after conv_done or calc_done
+    // Write result to Y line (where it was just pushed)
+    always @(posedge clk) begin
+        fmt_start_pulse <= 0;
+        // After conv_done (Enter pushed entry to stack), format the pushed value
+        if (conv_done && !fmt_busy_w)
+            fmt_start_pulse <= 1;
+        // After calc_done (operator result), format the result
+        if (calc_done && !fmt_busy_w)
+            fmt_start_pulse <= 1;
+    end
+
+    // line_y and y_len owned by this block only (no multi-driver)
+    always @(posedge clk) begin
+        if (fmt_wr_w)
+            line_y[fmt_pos_w] <= fmt_glyph_w;
+        if (fmt_done_w)
+            y_len <= fmt_len_w;
+        // Clear signal: is_clear in the commit block can't write y_len directly,
+        // so we check the condition here too
+        if (was_locked && !display_locked && is_clear)
+            y_len <= 0;
     end
 
     // =========================================================================
