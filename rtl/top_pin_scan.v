@@ -1,9 +1,9 @@
-// top_pin_scan.v — active pin scanner with 8bpp framebuffer + TRNG dithered OLED
+// top_pin_scan.v — dozenal calculator input with OLED display
 //
-// 67-pin sequential scanner with BB tristate I/O.
-// 8-bit framebuffer (8192 bytes, 128×64) written continuously from pin state.
-// TRNG dithering: 29 ring oscillators → temporal XOR → rotation mix → 8-bit threshold.
-// Geiger-counter LED: random toggles from TRNG.
+// 10-pin button scanner (columns-first: 62,63,49,56,27,28,44,50,51,57).
+// Chord shift: hold · + button = shifted function. Latch-on-first, commit-on-release.
+// Multiply detected from sampled data only (not combinational decoder).
+// 8bpp framebuffer with registered TRNG dither. Geiger-counter LEDs.
 
 module top_pin_scan #(
     parameter integer CLK_DIV = 7
@@ -38,7 +38,7 @@ module top_pin_scan #(
     assign ntsc_vid  = 1'b0;
 
     // =========================================================================
-    // BB tristate I/O — PIN FINDER MODE: all driven LOW, scan_idx driven HIGH
+    // BB tristate I/O — all button pins driven LOW, scan one at a time
     // =========================================================================
     reg [6:0] scan_idx = 0;
     wire [66:0] pin_in;
@@ -185,8 +185,10 @@ module top_pin_scan #(
         end
     endgenerate
 
-    // XOR-fold 29 → 8 bits
-    wire [7:0] trng_out = mixed[7:0] ^ mixed[15:8] ^ mixed[23:16] ^ {3'b0, mixed[28:24]};
+    // XOR-fold 29 → 8 bits, registered to clean glitches
+    wire [7:0] trng_raw = mixed[7:0] ^ mixed[15:8] ^ mixed[23:16] ^ {3'b0, mixed[28:24]};
+    reg [7:0] trng_out = 0;
+    always @(posedge clk) trng_out <= trng_raw;
 
     // =========================================================================
     // Geiger-counter LED — toggle on random TRNG events
@@ -255,7 +257,7 @@ module top_pin_scan #(
         5'd0;
 
     // =========================================================================
-    // Shift logic — · toggles shift on RELEASE, shifted button clears on RELEASE
+    // Shift logic — chord: hold · + button = shifted, sticky until release
     // =========================================================================
     // Shift = chord: hold · + press button = shifted. · alone = decimal.
     // If · released while button still held, stay shifted.
@@ -296,10 +298,6 @@ module top_pin_scan #(
     // 8bpp Framebuffer (8192 bytes, 128×64)
     // =========================================================================
     reg [7:0] fb [0:8191];
-    initial begin : fb_init
-        integer i;
-        for (i = 0; i < 8192; i = i + 1) fb[i] = 8'd0;
-    end
 
     wire [6:0] wr_col = fb_wr_addr[6:0];
     wire [5:0] wr_row = fb_wr_addr[12:7];
@@ -671,7 +669,7 @@ module top_pin_scan #(
             ST_GATHER: begin
                 gather_cnt <= gather_cnt + 1;
                 if (gather_cnt >= 4'd1) begin
-                    px_byte <= {(|fb_dout && fb_dout > trng_out), px_byte[7:1]};
+                    px_byte <= {(fb_dout > trng_out), px_byte[7:1]};
                 end
                 if (gather_cnt == 4'd8) begin
                     gather_cnt <= 0;
