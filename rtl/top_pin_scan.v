@@ -437,16 +437,9 @@ module top_pin_scan #(
                 pending_valid <= 0;
                 pending_op <= 0;
             end else if (is_enter) begin
-                // Push: entry→Y, Y→Z, Z→T (T falls off)
-                if (entry_len > 0) begin
-                    for (hi = 0; hi < 16; hi = hi + 1) line_t[hi] <= line_z[hi];
-                    t_len <= z_len;
-                    for (hi = 0; hi < 16; hi = hi + 1) line_z[hi] <= line_y[hi];
-                    z_len <= y_len;
-                    for (hi = 0; hi < 16; hi = hi + 1) line_y[hi] <= entry[hi];
-                    y_len <= entry_len;
-                    entry_len <= 0;
-                end
+                // Start digit→scalar conversion, then push
+                if (entry_len > 0)
+                    conv_start <= 1;
                 pending_valid <= 0;
             end else if (is_digit) begin
                 // Append digit to entry line (max 16)
@@ -464,6 +457,138 @@ module top_pin_scan #(
                 pending_valid <= 1;
             end
         end
+
+        // Conversion done → push stack and clear entry
+        if (conv_done) begin
+            for (hi = 0; hi < 16; hi = hi + 1) line_t[hi] <= line_z[hi];
+            t_len <= z_len;
+            for (hi = 0; hi < 16; hi = hi + 1) line_z[hi] <= line_y[hi];
+            z_len <= y_len;
+            for (hi = 0; hi < 16; hi = hi + 1) line_y[hi] <= entry[hi];
+            y_len <= entry_len;
+            entry_len <= 0;
+            pending_valid <= 0;
+        end
+    end
+
+    // =========================================================================
+    // Digit → Scalar converter (F5E4: 32-bit frac, 16-bit exp)
+    // =========================================================================
+    // Walks entry buffer: acc = acc * 12 + digit. Tracks decimal position.
+    // Normalizes to N1 format on completion.
+    reg conv_start = 0;
+    wire conv_done;
+
+    reg [1:0] conv_state = 0;
+    localparam C_IDLE = 2'd0, C_ACCUM = 2'd1, C_NORM = 2'd2, C_DONE = 2'd3;
+
+    reg [47:0] conv_acc = 0;       // 48-bit integer accumulator
+    reg [3:0]  conv_idx = 0;       // current entry index
+    reg [3:0]  conv_dec_pos = 0;   // digits after decimal (0 = integer only)
+    reg        conv_saw_dec = 0;   // seen decimal point
+    reg        conv_negative = 0;  // negate was in entry
+
+    reg [31:0] result_frac = 0;    // F5E4 output
+    reg signed [15:0] result_exp = 0;
+
+    // Scalar stack (stores actual computed values)
+    reg [31:0] stack_frac [0:3];   // X=0, Y=1, Z=2, T=3
+    reg signed [15:0] stack_exp [0:3];
+    reg [2:0] stack_depth = 0;
+
+    integer si;
+    initial begin
+        for (si = 0; si < 4; si = si + 1) begin
+            stack_frac[si] = 0;
+            stack_exp[si] = 0;
+        end
+    end
+
+    assign conv_done = (conv_state == C_DONE);
+
+    // Combinational CLZ on 48-bit conv_acc
+    wire [5:0] clz_val;
+    wire [47:0] clz_shifted;
+    wire [47:0] clz_s0 = conv_acc[47:32] ? conv_acc : {conv_acc[31:0], 16'd0};
+    wire [4:0]  clz_c0 = conv_acc[47:32] ? 5'd0 : 5'd16;
+    wire [47:0] clz_s1 = clz_s0[47:40] ? clz_s0 : {clz_s0[39:0], 8'd0};
+    wire [4:0]  clz_c1 = clz_s0[47:40] ? clz_c0 : clz_c0 + 5'd8;
+    wire [47:0] clz_s2 = clz_s1[47:44] ? clz_s1 : {clz_s1[43:0], 4'd0};
+    wire [4:0]  clz_c2 = clz_s1[47:44] ? clz_c1 : clz_c1 + 5'd4;
+    wire [47:0] clz_s3 = clz_s2[47:46] ? clz_s2 : {clz_s2[45:0], 2'd0};
+    wire [4:0]  clz_c3 = clz_s2[47:46] ? clz_c2 : clz_c2 + 5'd2;
+    wire [47:0] clz_s4 = clz_s3[47]    ? clz_s3 : {clz_s3[46:0], 1'd0};
+    wire [4:0]  clz_c4 = clz_s3[47]    ? clz_c3 : clz_c3 + 5'd1;
+    assign clz_val = {1'b0, clz_c4};
+    assign clz_shifted = clz_s4;
+
+    always @(posedge clk) begin
+        case (conv_state)
+            C_IDLE: begin
+                if (conv_start) begin
+                    conv_acc <= 0;
+                    conv_idx <= 0;
+                    conv_dec_pos <= 0;
+                    conv_saw_dec <= 0;
+                    conv_negative <= 0;
+                    conv_start <= 0;
+                    conv_state <= C_ACCUM;
+                end
+            end
+
+            C_ACCUM: begin
+                if ({1'b0, conv_idx} < entry_len) begin
+                    if (entry[conv_idx] == 6'd17) begin
+                        // Decimal point
+                        conv_saw_dec <= 1;
+                    end else if (entry[conv_idx] == 6'd12) begin
+                        // Negate symbol in entry
+                        conv_negative <= ~conv_negative;
+                    end else if (entry[conv_idx] <= 6'd11) begin
+                        // Dozenal digit: acc = acc * 12 + digit
+                        conv_acc <= (conv_acc << 3) + (conv_acc << 2) + {42'd0, entry[conv_idx]};
+                        if (conv_saw_dec)
+                            conv_dec_pos <= conv_dec_pos + 1;
+                    end
+                    conv_idx <= conv_idx + 1;
+                end else begin
+                    conv_state <= C_NORM;
+                end
+            end
+
+            C_NORM: begin
+                // Normalize 48-bit integer to Spirix N1 format (32-bit frac, 16-bit exp)
+                // CLZ + shift done combinationally via clz_val/clz_shifted wires below
+                if (conv_acc == 0) begin
+                    result_frac <= 0;
+                    result_exp <= 0;
+                end else begin
+                    // shifted[47] = leading 1. Take bits [47:16] as 32-bit N1 fraction.
+                    result_frac <= conv_negative ? -clz_shifted[47:16] : clz_shifted[47:16];
+                    // Exponent: value = frac * 2^exp. N1 has implicit point at bit 30.
+                    // exp = (47 - clz_val) - 30
+                    result_exp <= $signed({10'd0, 6'd47 - clz_val}) - 16'sd30;
+                end
+
+                // Push to scalar stack
+                stack_frac[3] <= stack_frac[2]; stack_exp[3] <= stack_exp[2];
+                stack_frac[2] <= stack_frac[1]; stack_exp[2] <= stack_exp[1];
+                stack_frac[1] <= stack_frac[0]; stack_exp[1] <= stack_exp[0];
+                stack_frac[0] <= (conv_acc == 0) ? 32'd0 :
+                                 (conv_negative ? -clz_shifted[47:16] : clz_shifted[47:16]);
+                stack_exp[0]  <= (conv_acc == 0) ? 16'sd0 :
+                                 ($signed({10'd0, 6'd47 - clz_val}) - 16'sd30);
+                if (stack_depth < 3'd4)
+                    stack_depth <= stack_depth + 1;
+
+                conv_state <= C_DONE;
+            end
+
+            C_DONE: begin
+                // Single-clock pulse, caught by commit logic above
+                conv_state <= C_IDLE;
+            end
+        endcase
     end
 
     // =========================================================================
