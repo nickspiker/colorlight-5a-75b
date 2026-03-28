@@ -42,13 +42,15 @@ module spirix_calc_core (
     localparam [1:0] EXP_W  = 2'b01;  // 16-bit
 
     // Spirix constants: value = (frac / 2^30) * 2^exp
-    // 12 = 1.5 * 2^3:  frac = 0x60000000, exp = 3
+    // Spirix convention: value = frac * 2^(exp - 31)
+    // 12: 0x60000000 * 2^(4-31) = 1.5 * 2^(-27) * 2^31 = 12
     localparam [31:0] CONST_12_FRAC = 32'h60000000;
-    localparam signed [15:0] CONST_12_EXP = 16'sd3;
+    localparam signed [15:0] CONST_12_EXP = 16'sd4;
 
-    // 0.5 = 1.0 * 2^(-1): frac = 0x40000000, exp = -1
+    // 0.5: 0x40000000 * 2^(0-31) = 1.0 * 2^(-31) * 2^31 = ... wait
+    // 0x40000000 * 2^(0-31) = 2^30 * 2^(-31) = 0.5. ✓
     localparam [31:0] CONST_HALF_FRAC = 32'h40000000;
-    localparam signed [15:0] CONST_HALF_EXP = -16'sd1;
+    localparam signed [15:0] CONST_HALF_EXP = 16'sd0;
 
     // =========================================================================
     // A/B input registers — muxed between stack (operator) and work (formatter)
@@ -126,25 +128,27 @@ module spirix_calc_core (
     // =========================================================================
     // Operator FSM
     // =========================================================================
-    localparam [3:0]
-        S_IDLE     = 4'd0,
-        S_EXEC     = 4'd1,
-        S_DIV_WAIT = 4'd2,
+    localparam [4:0]
+        S_IDLE     = 5'd0,
+        S_EXEC     = 5'd1,
+        S_DIV_WAIT = 5'd2,
         // Formatter states
-        S_FMT_ABS     = 4'd3,   // ABS(value) → magnitude
-        S_FMT_DIVSET  = 4'd4,   // set up DIV inputs (work_a = magnitude, work_b = 12)
-        S_FMT_DIV     = 4'd5,   // start DIV (inputs settled from previous clock)
-        S_FMT_DWAIT   = 4'd6,   // wait for div done
-        S_FMT_FLOOR   = 4'd7,   // FLOOR(quotient), set up SUB inputs
-        S_FMT_SUBWAIT = 4'd8,   // wait for addbit registered output
-        S_FMT_FCAP    = 4'd9,   // capture SUB result, set up MUL inputs
-        S_FMT_MULWAIT = 4'd10,  // wait for MUL inputs to settle
-        S_FMT_DIGIT   = 4'd11,  // extract digit from MUL result
-        S_FMT_DCAP    = 4'd12,  // store digit, check loop
-        S_FMT_EMIT    = 4'd13,  // write digits to output (reversed)
-        S_FMT_DONE    = 4'd14;
+        S_FMT_ABS     = 5'd3,   // ABS(value) → magnitude
+        S_FMT_DIVSET  = 5'd4,   // set up DIV inputs (work_a = magnitude, work_b = 12)
+        S_FMT_DIV     = 5'd5,   // start DIV (inputs settled from previous clock)
+        S_FMT_DWAIT   = 5'd6,   // wait for div done
+        S_FMT_FLOOR   = 5'd7,   // FLOOR(quotient), set up SUB inputs
+        S_FMT_SUBWAIT = 5'd8,   // wait for addbit registered output
+        S_FMT_FCAP    = 5'd9,   // capture SUB result, set up MUL inputs
+        S_FMT_MULWAIT = 5'd10,  // wait for MUL inputs to settle
+        S_FMT_ADDHALF = 5'd11, // set up ADD(mul_result, 0.5) for rounding
+        S_FMT_HALFWT  = 5'd12, // wait for addbit registered output
+        S_FMT_DIGIT   = 5'd13, // extract digit from rounded result
+        S_FMT_DCAP    = 5'd14, // store digit, check loop
+        S_FMT_EMIT    = 5'd15, // write digits to output (reversed)
+        S_FMT_DONE    = 5'd16; // signal completion
 
-    reg [3:0] state = S_IDLE;
+    reg [4:0] state = S_IDLE;
     reg [2:0] alu_sel = 0;
 
     assign op_busy  = (state != S_IDLE);
@@ -172,30 +176,39 @@ module spirix_calc_core (
     initial for (di = 0; di < 12; di = di + 1) digit_buf[di] = 6'd0;
 
     // Combinational digit extraction: to_u8 on MUL result (Spirix scalar → 0-11)
-    // Includes rounding: check next fractional bit below extracted digits
-    wire [31:0] dex_frac = mul_res_frac[63:32];
-    wire signed [15:0] dex_exp = mul_res_exp[15:0];
+    // Convention: value = frac * 2^(exp - 31). Integer = frac >> (31 - exp).
+    // For digits 0-11, exp is 0-4 (values up to 11 = 0xB need 4 bits).
+    // Read from FLOOR output: FLOOR(MUL_result + 0.5) = rounded integer digit
+    wire [31:0] dex_frac = floor_res_frac[63:32];
+    wire signed [15:0] dex_exp = floor_res_exp[15:0];
 
-    wire [5:0] dex_raw =
-        (dex_exp == 16'sd0) ? {5'd0, dex_frac[30]} :
-        (dex_exp == 16'sd1) ? {4'd0, dex_frac[30:29]} :
-        (dex_exp == 16'sd2) ? {3'd0, dex_frac[30:28]} :
-        (dex_exp == 16'sd3) ? {2'd0, dex_frac[30:27]} :
-        6'd0;
+    // Integer = frac >> (31 - exp). Shift the full 32-bit frac right.
+    // For digits 0-11, exp ranges 1-4. Shift amounts: 30, 29, 28, 27.
+    wire [31:0] dex_shifted =
+        (dex_exp <= 16'sd0)  ? 32'd0 :
+        (dex_exp == 16'sd1)  ? (dex_frac >> 30) :  // >> 30: value 0-1
+        (dex_exp == 16'sd2)  ? (dex_frac >> 29) :  // >> 29: value 0-3
+        (dex_exp == 16'sd3)  ? (dex_frac >> 28) :  // >> 28: value 0-7
+        (dex_exp == 16'sd4)  ? (dex_frac >> 27) :  // >> 27: value 0-15
+        32'd0;
 
+    // Round: check the bit just below the shift point
+    // For exp=0: value < 1, but might round up (e.g. 0.999 → 1)
     wire dex_round =
-        (dex_exp == 16'sd0) ? dex_frac[29] :
-        (dex_exp == 16'sd1) ? dex_frac[28] :
-        (dex_exp == 16'sd2) ? dex_frac[27] :
-        (dex_exp == 16'sd3) ? dex_frac[26] :
+        (dex_exp == 16'sd0)  ? dex_frac[30] :  // bit 30 = 0.5, round if >= 0.5
+        (dex_exp == 16'sd1)  ? dex_frac[29] :
+        (dex_exp == 16'sd2)  ? dex_frac[28] :
+        (dex_exp == 16'sd3)  ? dex_frac[27] :
+        (dex_exp == 16'sd4)  ? dex_frac[26] :
         1'b0;
 
-    wire [5:0] dex_rounded = dex_raw + {5'd0, dex_round};
+    // No extra rounding — the +0.5 ADD step already handles it
+    wire [5:0] dex_val = dex_shifted[5:0];
 
     wire [5:0] digit_extract =
-        (dex_frac == 32'd0 || dex_exp < 16'sd0) ? 6'd0 :
-        (dex_rounded > 6'd11) ? 6'd11 :
-        dex_rounded;
+        (dex_frac == 32'd0 || dex_frac[31]) ? 6'd0 :  // zero or negative
+        (dex_val > 6'd11) ? 6'd11 :                    // clamp
+        dex_val;
 
     always @(posedge clk) begin
         op_done <= 0;
@@ -289,6 +302,11 @@ module spirix_calc_core (
                     // Set up FLOOR: input A = scaled
                     work_a_frac <= div_res_frac[63:32];
                     work_a_exp <= div_res_exp[15:0];
+                    // synthesis translate_off
+                    $display("  DIV result: frac=0x%08x exp=%0d (value=%f)",
+                        div_res_frac[63:32], $signed(div_res_exp[15:0]),
+                        $itor(div_res_frac[63:32]) / (2.0**30) * (2.0**$itor($signed(div_res_exp[15:0]))));
+                    // synthesis translate_on
                     state <= S_FMT_FLOOR;
                 end
             end
@@ -297,6 +315,9 @@ module spirix_calc_core (
                 // FLOOR result available (combinational from round module)
                 fmt_floor_frac <= floor_res_frac[63:32];
                 fmt_floor_exp <= floor_res_exp[15:0];
+                // synthesis translate_off
+                $display("  FLOOR: frac=0x%08x exp=%0d", floor_res_frac[63:32], $signed(floor_res_exp[15:0]));
+                // synthesis translate_on
                 // Set up SUB: (scaled - floor) → remainder
                 work_a_frac <= fmt_scaled_frac;
                 work_a_exp <= fmt_scaled_exp;
@@ -313,6 +334,10 @@ module spirix_calc_core (
 
             S_FMT_FCAP: begin
                 // SUB result now valid — set up MUL: remainder * 12
+                // synthesis translate_off
+                $display("  SUB result (remainder): frac=0x%08x exp=%0d",
+                    add_res_frac[63:32], $signed(add_res_exp[15:0]));
+                // synthesis translate_on
                 work_a_frac <= add_res_frac[63:32];
                 work_a_exp <= add_res_exp[15:0];
                 work_b_frac <= CONST_12_FRAC;
@@ -321,13 +346,38 @@ module spirix_calc_core (
             end
 
             S_FMT_MULWAIT: begin
-                // Wait for MUL inputs to settle through combinational path
+                // MUL result available. Set up ADD(mul_result, 0.5) for rounding.
+                work_a_frac <= mul_res_frac[63:32];
+                work_a_exp <= mul_res_exp[15:0];
+                work_b_frac <= CONST_HALF_FRAC;
+                work_b_exp <= CONST_HALF_EXP;
+                add_op <= 3'd0;  // ADD
+                state <= S_FMT_ADDHALF;
+            end
+
+            S_FMT_ADDHALF: begin
+                // Wait for addbit to latch
+                state <= S_FMT_HALFWT;
+            end
+
+            S_FMT_HALFWT: begin
+                // ADD result valid. Now FLOOR it to get the integer digit.
+                // Set work_a to the ADD result for FLOOR.
+                work_a_frac <= add_res_frac[63:32];
+                work_a_exp <= add_res_exp[15:0];
                 state <= S_FMT_DIGIT;
             end
 
             S_FMT_DIGIT: begin
+                // FLOOR result available (combinational, 1 settle clock).
+                // This is the digit value as a Spirix integer.
+                // Extract using shift: integer = frac >> (31 - exp)
                 // MUL result (combinational): remainder * 12 = digit (0-11)
-                // digit_extract is a combinational wire using to_u8 logic
+                // synthesis translate_off
+                $display("  DIGIT: add_res frac=0x%08x exp=%0d → digit=%0d (shifted=%0d round=%0d)",
+                    add_res_frac[63:32], $signed(add_res_exp[15:0]),
+                    digit_extract, dex_shifted, dex_round);
+                // synthesis translate_on
                 digit_buf[digit_count] <= digit_extract;
                 digit_count <= digit_count + 1;
                 state <= S_FMT_DCAP;
@@ -337,7 +387,7 @@ module spirix_calc_core (
                 // Check if quotient (fmt_floor) is zero → done
                 // Also limit to 9 digits max
                 if (fmt_floor_frac == 32'd0 || fmt_floor_exp == -16'sd32768 ||
-                    digit_count >= 4'd9) begin
+                    digit_count >= 5'd9) begin
                     state <= S_FMT_EMIT;
                 end else begin
                     // Continue: magnitude = floor (integer quotient)

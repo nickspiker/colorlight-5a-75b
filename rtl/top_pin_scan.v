@@ -572,12 +572,13 @@ module top_pin_scan #(
                 end
 
                 // Result (stack push happens in unified stack block below)
-                // value = (frac / 2^30) * 2^exp. Converter exp = 47 - clz_val.
+                // Spirix convention: value = frac * 2^(exp - 31).
+                // Converter exp = 48 - clz_val.
                 result_frac <= (conv_acc == 0) ? 32'd0 :
                                (conv_negative ? -{1'b0, clz_shifted[47:17]}
                                               :  {1'b0, clz_shifted[47:17]});
                 result_exp  <= (conv_acc == 0) ? 16'sd0 :
-                               $signed({10'd0, 6'd47 - clz_val});
+                               $signed({10'd0, 6'd48 - clz_val});
 
                 conv_state <= C_DONE;
             end
