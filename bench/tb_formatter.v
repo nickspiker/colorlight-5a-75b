@@ -107,39 +107,32 @@ module tb_formatter;
         // Test 1: value = 0 (frac=0, exp=AMBIG)
         format_value(32'h00000000, -16'sd32768, "zero");
 
+        // Values from Rust: cargo run --example gen_calc_vectors
         // Convention: value = frac * 2^(exp - 31)
-        // Test 2: value = 1. frac=0x40000000, exp=1. (2^30 * 2^(1-31) = 2^30 * 2^-30 = 1)
-        format_value(32'h40000000, 16'sd1, "one");
+        format_value(32'h40000000, 16'sd1,  "one");        // 1
+        format_value(32'h40000000, 16'sd2,  "two");        // 2
+        format_value(32'h60000000, 16'sd2,  "three");      // 3
+        format_value(32'h70000000, 16'sd3,  "seven");      // 7
+        format_value(32'h58000000, 16'sd4,  "eleven");     // 11 = B
+        format_value(32'h60000000, 16'sd4,  "twelve");     // 12 = 10
+        format_value(32'h60000000, 16'sd5,  "twentyfour"); // 24 = 20
+        format_value(32'h48000000, 16'sd8,  "144");        // 144 = 100
+        format_value(32'hA0000000, 16'sd2,  "neg_three");  // -3
+        format_value(32'h80000000, 16'sd0,  "neg_one");    // -1
 
-        // Test 3: value = 3. frac=0x60000000, exp=2. (1.5*2^30 * 2^(2-31) = 1.5*2 = 3)
-        format_value(32'h60000000, 16'sd2, "three");
-
-        // Test 4: value = 12. frac=0x60000000, exp=4. (1.5*2^30 * 2^(4-31) = 1.5*8 = 12)
-        format_value(32'h60000000, 16'sd4, "twelve");
-
-        // Test 5: value = 7. frac=0x70000000, exp=3. (1.75*2^30 * 2^(3-31) = 1.75*4 = 7)
-        format_value(32'h70000000, 16'sd3, "seven");
-
-        // Test 6: value = 144. frac=0x48000000, exp=8. (1.125*2^30 * 2^(8-31) = 1.125*128 = 144)
-        format_value(32'h48000000, 16'sd8, "144");
-
-        // Direct MUL test: 0.0833 * 12 should be 1.0
-        $display("\n=== Direct MUL test ===");
-        // Set work registers and observe MUL output
+        // Direct operator multiply test: 3 * 4 should be 12
+        $display("\n=== Operator MUL test: 3 * 4 ===");
+        stk_y_frac = 32'h60000000; stk_y_exp = 16'sd2;  // Y = 3
+        stk_x_frac = 32'h40000000; stk_x_exp = 16'sd3;  // X = 4
+        stk_depth = 3'd2;
         @(posedge clk);
-        // Can't directly access work regs, but let's test via operator
-        // Actually, let's just test the formatter output for now
-
-        // Add more test values
-        // value 2: frac=0x40000000, exp=2. (2^30 * 2^(2-31) = 2)
-        format_value(32'h40000000, 16'sd2, "two");
-
-        // value 11: frac=0x58000000, exp=4. Check: 0x58000000 * 2^(4-31)
-        // 0x58000000 = 1476395008. * 2^(-27) = 11.0
-        format_value(32'h58000000, 16'sd4, "eleven");
-
-        // value 24: frac=0x60000000, exp=5. 1.5 * 16 = 24
-        format_value(32'h60000000, 16'sd5, "twentyfour");
+        op_slot = 6'd16;  // multiply
+        op_start = 1;
+        @(posedge clk);
+        op_start = 0;
+        while (!op_done) @(posedge clk);
+        $display("  3 * 4 = frac=0x%08x exp=%0d", res_frac, $signed(res_exp));
+        $display("  Expected: frac=0x60000000 exp=4 (=12)");
 
         $display("\n=== All tests complete ===");
         $finish;

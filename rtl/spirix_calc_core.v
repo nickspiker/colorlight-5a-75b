@@ -47,9 +47,10 @@ module spirix_calc_core (
     localparam [31:0] CONST_12_FRAC = 32'h60000000;
     localparam signed [15:0] CONST_12_EXP = 16'sd4;
 
-    // 0.5: 0x40000000 * 2^(0-31) = 1.0 * 2^(-31) * 2^31 = ... wait
-    // 0x40000000 * 2^(0-31) = 2^30 * 2^(-31) = 0.5. ✓
-    localparam [31:0] CONST_HALF_FRAC = 32'h40000000;
+    // Rounding constant: slightly above 0.5 to compensate for floor-only MUL truncation.
+    // 0x40000010 * 2^(0-31) ≈ 0.500000007. Pushes MUL results that are 1 ULP below
+    // an integer over the threshold without over-rounding non-boundary values.
+    localparam [31:0] CONST_HALF_FRAC = 32'h40000010;
     localparam signed [15:0] CONST_HALF_EXP = 16'sd0;
 
     // =========================================================================
@@ -162,6 +163,8 @@ module spirix_calc_core (
     reg [31:0] fmt_floor_frac = 0;        // floored quotient
     reg signed [15:0] fmt_floor_exp = 0;
     reg        fmt_is_negative = 0;
+    reg [31:0] fmt_mul_frac = 0;       // captured MUL result (before ADD clobbers inputs)
+    reg signed [15:0] fmt_mul_exp = 0;
 
     // Digit buffer: extract LSB-first, emit MSB-first
     reg [5:0] digit_buf [0:11];  // up to 12 digits
@@ -178,7 +181,7 @@ module spirix_calc_core (
     // Combinational digit extraction: to_u8 on MUL result (Spirix scalar → 0-11)
     // Convention: value = frac * 2^(exp - 31). Integer = frac >> (31 - exp).
     // For digits 0-11, exp is 0-4 (values up to 11 = 0xB need 4 bits).
-    // Read from FLOOR output: FLOOR(MUL_result + 0.5) = rounded integer digit
+    // Read from FLOOR output: FLOOR(captured_MUL + 0.5) = rounded integer digit
     wire [31:0] dex_frac = floor_res_frac[63:32];
     wire signed [15:0] dex_exp = floor_res_exp[15:0];
 
@@ -346,48 +349,49 @@ module spirix_calc_core (
             end
 
             S_FMT_MULWAIT: begin
-                // MUL result available. Set up ADD(mul_result, 0.5) for rounding.
-                work_a_frac <= mul_res_frac[63:32];
-                work_a_exp <= mul_res_exp[15:0];
-                work_b_frac <= CONST_HALF_FRAC;
-                work_b_exp <= CONST_HALF_EXP;
-                add_op <= 3'd0;  // ADD
+                // Capture MUL result (MUL and ADD share a/b mux)
+                fmt_mul_frac <= mul_res_frac[63:32];
+                fmt_mul_exp <= mul_res_exp[15:0];
+                // Set up ADD(captured_mul + 0.5) for rounding
                 state <= S_FMT_ADDHALF;
             end
 
             S_FMT_ADDHALF: begin
-                // Wait for addbit to latch
+                // Set up ADD(captured_mul + rounding_constant)
+                work_a_frac <= fmt_mul_frac;
+                work_a_exp <= fmt_mul_exp;
+                work_b_frac <= CONST_HALF_FRAC;
+                work_b_exp <= CONST_HALF_EXP;
+                add_op <= 3'd0;  // ADD
                 state <= S_FMT_HALFWT;
             end
 
             S_FMT_HALFWT: begin
-                // ADD result valid. Now FLOOR it to get the integer digit.
-                // Set work_a to the ADD result for FLOOR.
-                work_a_frac <= add_res_frac[63:32];
-                work_a_exp <= add_res_exp[15:0];
+                // Addbit latches. Wait for output.
                 state <= S_FMT_DIGIT;
             end
 
             S_FMT_DIGIT: begin
-                // FLOOR result available (combinational, 1 settle clock).
-                // This is the digit value as a Spirix integer.
-                // Extract using shift: integer = frac >> (31 - exp)
-                // MUL result (combinational): remainder * 12 = digit (0-11)
-                // synthesis translate_off
-                $display("  DIGIT: add_res frac=0x%08x exp=%0d → digit=%0d (shifted=%0d round=%0d)",
-                    add_res_frac[63:32], $signed(add_res_exp[15:0]),
-                    digit_extract, dex_shifted, dex_round);
-                // synthesis translate_on
-                digit_buf[digit_count] <= digit_extract;
-                digit_count <= digit_count + 1;
+                // ADD result valid. Set work_a for FLOOR.
+                work_a_frac <= add_res_frac[63:32];
+                work_a_exp <= add_res_exp[15:0];
+                // Set up FLOOR input (will read on next clock)
                 state <= S_FMT_DCAP;
             end
 
             S_FMT_DCAP: begin
+                // FLOOR output valid (combinational from work_a set in DIGIT)
+                // synthesis translate_off
+                $display("  DIGIT: floor frac=0x%08x exp=%0d → digit=%0d (shifted=%0d round=%0d)",
+                    floor_res_frac[63:32], $signed(floor_res_exp[15:0]),
+                    digit_extract, dex_shifted, dex_round);
+                // synthesis translate_on
+                digit_buf[digit_count] <= digit_extract;
+                digit_count <= digit_count + 1;
                 // Check if quotient (fmt_floor) is zero → done
                 // Also limit to 9 digits max
-                if (fmt_floor_frac == 32'd0 || fmt_floor_exp == -16'sd32768 ||
-                    digit_count >= 5'd9) begin
+                if (fmt_floor_frac == 32'd0 || fmt_floor_exp == 16'sh8000 ||
+                    digit_count >= 4'd9) begin
                     state <= S_FMT_EMIT;
                 end else begin
                     // Continue: magnitude = floor (integer quotient)
