@@ -291,7 +291,7 @@ module top_pin_scan #(
     // =========================================================================
     // Glyph ROM — 36 glyphs × 16×16 × 8bpp = 9216 bytes
     // =========================================================================
-    reg [7:0] glyph_rom [0:16383];  // 39 glyphs × 256 bytes (oversized for address space)
+    reg [7:0] glyph_rom [0:9983];  // 39 glyphs × 256 bytes
     initial $readmemh("glyphs.mem", glyph_rom);
 
     // =========================================================================
@@ -709,19 +709,33 @@ module top_pin_scan #(
     wire [5:0] y_slot = y_valid ? line_y[y_idx[3:0]] : 6'd0;
     wire [5:0] e_slot = e_valid ? entry[e_idx[3:0]] : 6'd0;
 
-    wire [5:0] render_slot = (line_sel == 2'd0) ? t_slot :
-                             (line_sel == 2'd1) ? z_slot :
-                             (line_sel == 2'd2) ? y_slot : e_slot;
-    wire render_valid = (line_sel == 2'd0) ? t_valid :
-                        (line_sel == 2'd1) ? z_valid :
-                        (line_sel == 2'd2) ? y_valid : e_valid;
+    // T line (rows 0-15): binary display of stack_frac[0], 4px per bit, MSB left
+    // 32 bits × 4px = 128px. Bright = 1, dark = 0.
+    wire [4:0] frac_bit_idx = 5'd31 - wr_col[6:2];  // MSB first: col 0-3 = bit 31, col 4-7 = bit 30, etc.
+    wire frac_bit_val = (line_sel == 2'd0) ? stack_frac[0][frac_bit_idx] : 1'b0;
+
+    // Z line (rows 16-31): binary display of stack_exp[0], 4px per bit, MSB left
+    // 16 bits × 4px = 64px. Remaining 64px = sign indicator (bright=positive, dark=negative).
+    wire [3:0] exp_bit_idx = 4'd15 - wr_col[5:2];  // MSB first
+    wire exp_bit_val = (line_sel == 2'd1 && wr_col < 7'd64) ? stack_exp[0][exp_bit_idx] : 1'b0;
+    wire exp_sign_bar = (line_sel == 2'd1 && wr_col >= 7'd64) ? !stack_exp[0][15] : 1'b0;  // bright = positive
+
+    // Binary display pixel
+    wire binary_active = (line_sel == 2'd0) || (line_sel == 2'd1);
+    wire [7:0] binary_pixel = (line_sel == 2'd0) ? (frac_bit_val ? 8'hFF : 8'h00) :
+                              (exp_bit_val || exp_sign_bar) ? 8'hFF : 8'h00;
+
+    // Y line: formatter output. X line: entry glyphs.
+    wire [5:0] render_slot = (line_sel == 2'd2) ? y_slot : e_slot;
+    wire render_valid = (line_sel == 2'd2) ? y_valid : e_valid;
     wire [3:0] render_y = glyph_y;
     wire [3:0] render_x = glyph_x;
 
     wire [13:0] glyph_addr = {render_slot, render_y, render_x};
     wire [7:0] glyph_pixel = render_valid ? glyph_rom[glyph_addr] : 8'h00;
 
-    wire [7:0] fb_wr_pixel = {8{render_valid}} & glyph_pixel;
+    wire [7:0] fb_wr_pixel = binary_active ? binary_pixel :
+                             ({8{render_valid}} & glyph_pixel);
 
     reg [12:0] fb_wr_addr = 0;
     always @(posedge clk) begin
