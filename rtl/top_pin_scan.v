@@ -417,6 +417,9 @@ module top_pin_scan #(
     // Everything else = operator (add, subtract, multiply, divide, etc.)
     wire is_operator = !is_digit && !is_enter && !is_ce && !is_clear && !is_negate;
 
+    // Entry sign flag: toggled by negate, applied on Enter
+    reg entry_sign = 0;  // 0 = positive, 1 = negative
+
     // Pending operator (flashes on live display, later triggers computation)
     reg [5:0] pending_op = 0;
     reg pending_valid = 0;
@@ -430,30 +433,34 @@ module top_pin_scan #(
                     entry_len <= entry_len - 1;
                 pending_valid <= 0;
             end else if (is_clear) begin
-                // Clear everything (y_len cleared in formatter block via signal)
+                // Clear everything
                 entry_len <= 0;
+                entry_sign <= 0;
                 z_len <= 0;
                 t_len <= 0;
                 pending_valid <= 0;
                 pending_op <= 0;
             end else if (is_enter) begin
-                // Start digit→scalar conversion, then push
-                if (entry_len > 0)
-                    conv_start <= 1;
+                // Convert + push. If empty, push zero directly.
+                conv_start <= 1;  // converter handles entry_len==0 as zero
                 pending_valid <= 0;
             end else if (is_digit) begin
-                // Append digit to entry line (max 16)
-                if (entry_len < 5'd16) begin
+                // Append digit (max 7). No leading zeros (slot 0 = Zil).
+                if (entry_len < 5'd7 && !(entry_len == 0 && display_slot == 6'd0)) begin
                     entry[entry_len[3:0]] <= display_slot;
                     entry_len <= entry_len + 1;
                 end
                 pending_valid <= 0;
-            end else if (is_negate || is_operator) begin
+            end else if (is_negate) begin
+                // Toggle sign flag (no parse, just visual)
+                entry_sign <= ~entry_sign;
+                pending_valid <= 0;
+            end else if (is_operator) begin
                 // If entry has digits, auto-enter first
                 if (entry_len > 0) begin
                     conv_start <= 1;
+                    entry_sign <= 0;
                 end
-                // Latch operator for dispatch (handled in calc dispatch block)
                 pending_op <= display_slot;
                 pending_valid <= 1;
             end
@@ -466,6 +473,7 @@ module top_pin_scan #(
             for (hi = 0; hi < 16; hi = hi + 1) line_z[hi] <= line_y[hi];
             z_len <= y_len;
             entry_len <= 0;
+            entry_sign <= 0;  // reset sign after converter has latched it
             pending_valid <= 0;
         end
     end
@@ -534,7 +542,7 @@ module top_pin_scan #(
                     conv_idx <= 0;
                     conv_dec_pos <= 0;
                     conv_saw_dec <= 0;
-                    conv_negative <= 0;
+                    conv_negative <= entry_sign;  // use the toggled sign flag
                     conv_state <= C_ACCUM;
                 end
             end
@@ -560,25 +568,22 @@ module top_pin_scan #(
             end
 
             C_NORM: begin
-                // Normalize 48-bit integer to Spirix N1 format (32-bit frac, 16-bit exp)
-                // CLZ + shift done combinationally via clz_val/clz_shifted wires below
+                // Normalize 48-bit integer to Spirix N1 format
+                // CLZ + shift via clz_val/clz_shifted wires.
+                // N1: positive = 01xxxxx. {1'b0, clz_shifted[47:17]} puts leading 1 at bit 30.
+                // Spirix: value = frac * 2^(exp - 31). Converter exp = 48 - clz.
                 if (conv_acc == 0) begin
-                    result_frac <= 0;
-                    result_exp <= 0;
+                    result_frac <= 32'd0;
+                    result_exp  <= 16'sh8000;  // AMBIG = Spirix zero
+                end else if (conv_negative && clz_shifted[47:17] == 31'h40000000) begin
+                    // POS_ONE → NEG_ONE special case (N1 constraint)
+                    result_frac <= 32'h80000000;
+                    result_exp  <= $signed({10'd0, 6'd48 - clz_val}) - 16'sd1;
                 end else begin
-                    // N1 positive: 0_1xxxxx. Shift so leading 1 is at bit 30 (not 31).
-                    // clz_shifted has leading 1 at bit 47. Take [47:17] = 31 data bits,
-                    // prepend 0 sign bit.
+                    result_frac <= conv_negative ? -{1'b0, clz_shifted[47:17]}
+                                                :  {1'b0, clz_shifted[47:17]};
+                    result_exp  <= $signed({10'd0, 6'd48 - clz_val});
                 end
-
-                // Result (stack push happens in unified stack block below)
-                // Spirix convention: value = frac * 2^(exp - 31).
-                // Converter exp = 48 - clz_val.
-                result_frac <= (conv_acc == 0) ? 32'd0 :
-                               (conv_negative ? -{1'b0, clz_shifted[47:17]}
-                                              :  {1'b0, clz_shifted[47:17]});
-                result_exp  <= (conv_acc == 0) ? 16'sd0 :
-                               $signed({10'd0, 6'd48 - clz_val});
 
                 conv_state <= C_DONE;
             end
@@ -690,45 +695,72 @@ module top_pin_scan #(
     wire [2:0] glyph_col = wr_col[6:4];  // 0-7 display column
     wire [3:0] glyph_x = wr_col[3:0];    // 0-15 within slot
     wire [3:0] glyph_y = wr_row[3:0];    // 0-15 within line
-    wire [1:0] line_sel = wr_row[5:4];   // 0=T, 1=Z, 2=Y, 3=X
+    // (line_sel removed — using band wires instead)
 
     // Right-aligned index: display col + len - 8. Valid when col + len >= 8.
     // Shows rightmost 8 of up to 16 stored glyphs.
     wire [4:0] t_idx = {2'b0, glyph_col} + t_len - 5'd8;
     wire [4:0] z_idx = {2'b0, glyph_col} + z_len - 5'd8;
     wire [4:0] y_idx = {2'b0, glyph_col} + y_len - 5'd8;
-    wire [4:0] e_idx = {2'b0, glyph_col} + entry_len - 5'd8;
+    // Entry line: col 0 = sign, cols 1-7 = right-aligned digits (7 positions)
+    // Default: show Zil (0) at col 7 when empty
+    wire e_is_sign_col = (glyph_col == 3'd0);
+    wire [4:0] e_digit_col = {2'b0, glyph_col} - 5'd1;  // 0-6 for digit positions
+    // Right-align digits in 7 positions: idx = entry_len - (7 - e_digit_col)
+    wire [4:0] e_idx = e_digit_col + entry_len - 5'd7;
 
     wire t_valid = ({2'b0, glyph_col} + t_len >= 5'd8) && (t_len > 0);
     wire z_valid = ({2'b0, glyph_col} + z_len >= 5'd8) && (z_len > 0);
     wire y_valid = ({2'b0, glyph_col} + y_len >= 5'd8) && (y_len > 0);
-    wire e_valid = ({2'b0, glyph_col} + entry_len >= 5'd8) && (entry_len > 0);
+    // Entry valid: sign col always valid, digit cols valid when in range or default Zil
+    wire e_digit_in_range = !e_is_sign_col && (e_digit_col + entry_len >= 5'd7) && (entry_len > 0);
+    wire e_default_zil = !e_is_sign_col && (glyph_col == 3'd7) && (entry_len == 0);
+    wire e_valid = e_sign_visible || e_digit_in_range || e_default_zil;
 
     wire [5:0] t_slot = t_valid ? line_t[t_idx[3:0]] : 6'd0;
     wire [5:0] z_slot = z_valid ? line_z[z_idx[3:0]] : 6'd0;
     wire [5:0] y_slot = y_valid ? line_y[y_idx[3:0]] : 6'd0;
-    wire [5:0] e_slot = e_valid ? entry[e_idx[3:0]] : 6'd0;
+    // Sign: show when digits entered. Positive = slot 38, negative = slot 37. Hidden for default Zil.
+    wire [5:0] e_slot = e_is_sign_col ? (entry_sign ? 6'd37 : 6'd38) :
+                        e_default_zil ? 6'd0 :
+                        e_digit_in_range ? entry[e_idx[3:0]] : 6'd0;
+    // Sign visible when entry has digits (leading zeros blocked, so entry_len>0 = non-zero)
+    wire e_sign_visible = e_is_sign_col && (entry_len > 0);
 
-    // T line (rows 0-15): binary display of stack_frac[0], 4px per bit, MSB left
-    // 32 bits × 4px = 128px. Bright = 1, dark = 0.
-    wire [4:0] frac_bit_idx = 5'd31 - wr_col[6:2];  // MSB first: col 0-3 = bit 31, col 4-7 = bit 30, etc.
-    wire frac_bit_val = (line_sel == 2'd0) ? stack_frac[0][frac_bit_idx] : 1'b0;
+    // Layout: rows 0-7 frac, 8-15 exp, 16-31 Y history, 32-47 Z history, 48-63 entry
+    // Binary display: 8px tall, 4px per bit, 1px separator
+    wire in_frac_band = (wr_row < 6'd8);
+    wire in_exp_band = (wr_row >= 6'd8) && (wr_row < 6'd16);
+    wire in_y_band = (wr_row >= 6'd16) && (wr_row < 6'd32);
+    wire in_z_band = (wr_row >= 6'd32) && (wr_row < 6'd48);
+    wire in_entry_band = (wr_row >= 6'd48);
 
-    // Z line (rows 16-31): binary display of stack_exp[0], 4px per bit, MSB left
-    // 16 bits × 4px = 64px. Remaining 64px = sign indicator (bright=positive, dark=negative).
-    wire [3:0] exp_bit_idx = 4'd15 - wr_col[5:2];  // MSB first
-    wire exp_bit_val = (line_sel == 2'd1 && wr_col < 7'd64) ? stack_exp[0][exp_bit_idx] : 1'b0;
-    wire exp_sign_bar = (line_sel == 2'd1 && wr_col >= 7'd64) ? !stack_exp[0][15] : 1'b0;  // bright = positive
+    wire [4:0] frac_bit_idx = 5'd31 - wr_col[6:2];
+    wire frac_bit_val = in_frac_band ? stack_frac[0][frac_bit_idx] : 1'b0;
+    wire frac_sep = (wr_col[1:0] == 2'd3);
 
-    // Binary display pixel
-    wire binary_active = (line_sel == 2'd0) || (line_sel == 2'd1);
-    wire [7:0] binary_pixel = (line_sel == 2'd0) ? (frac_bit_val ? 8'hFF : 8'h00) :
-                              (exp_bit_val || exp_sign_bar) ? 8'hFF : 8'h00;
+    wire [3:0] exp_bit_idx = 4'd15 - wr_col[5:2];
+    wire exp_bit_val = (in_exp_band && wr_col < 7'd64) ? stack_exp[0][exp_bit_idx] : 1'b0;
+    wire exp_sep = (in_exp_band && wr_col < 7'd64 && wr_col[1:0] == 2'd3);
+    wire exp_sign_pos = (in_exp_band && wr_col >= 7'd64) ? !stack_exp[0][15] : 1'b0;
 
-    // Y line: formatter output. X line: entry glyphs.
-    wire [5:0] render_slot = (line_sel == 2'd2) ? y_slot : e_slot;
-    wire render_valid = (line_sel == 2'd2) ? y_valid : e_valid;
-    wire [3:0] render_y = glyph_y;
+    // 1px separator between frac and exp
+    wire sep_line = (wr_row == 6'd7);
+
+    wire binary_active = in_frac_band || in_exp_band;
+    wire [7:0] binary_pixel =
+        sep_line ? 8'hFF :
+        in_frac_band ? (frac_sep ? 8'h40 : (frac_bit_val ? 8'hFF : 8'h00)) :
+        exp_sep ? 8'h40 : exp_sign_pos ? 8'h80 : (exp_bit_val ? 8'hFF : 8'h00);
+
+    // History + entry glyph rendering
+    wire [3:0] hist_gy = in_y_band ? (wr_row - 6'd16) : (wr_row - 6'd32);
+    wire [3:0] entry_gy = wr_row - 6'd48;
+
+    wire [5:0] render_slot = in_y_band ? y_slot : in_z_band ? z_slot : e_slot;
+    wire render_valid = in_y_band ? y_valid : in_z_band ? z_valid :
+                        in_entry_band ? e_valid : 1'b0;
+    wire [3:0] render_y = in_y_band ? hist_gy : in_z_band ? hist_gy : entry_gy;
     wire [3:0] render_x = glyph_x;
 
     wire [13:0] glyph_addr = {render_slot, render_y, render_x};

@@ -398,15 +398,25 @@ module spirix_calc_core (
             end
 
             S_FMT_EMIT: begin
-                // Emit digits in reverse order (MSB first) + sign
-                // First emit: sign glyph
-                if (emit_idx == 0 && digit_count > 0) begin
-                    fmt_glyph <= fmt_is_negative ? 6'd37 : 6'd38;  // neg/pos sign
+                // Emit digits reversed (MSB first). Sign only for non-zero.
+                if (emit_idx == 0 && digit_count > 0 && !fmt_is_zero) begin
+                    // Sign glyph (skip for zero)
+                    fmt_glyph <= fmt_is_negative ? 6'd37 : 6'd38;
                     fmt_pos <= 0;
                     fmt_wr <= 1;
                     emit_idx <= 1;
-                    fmt_len <= digit_count + 1;  // digits + sign
-                end else if (emit_idx <= digit_count) begin
+                    fmt_len <= digit_count + 1;
+                end else if (emit_idx == 0 && fmt_is_zero) begin
+                    // Zero: skip sign, start digits directly
+                    emit_idx <= 1;
+                    fmt_len <= digit_count;
+                end else if (fmt_is_zero && emit_idx == 1) begin
+                    // Zero: emit single "0" at position 0
+                    fmt_glyph <= 6'd0;
+                    fmt_pos <= 0;
+                    fmt_wr <= 1;
+                    emit_idx <= emit_idx + 1;
+                end else if (!fmt_is_zero && emit_idx <= digit_count) begin
                     // Emit digit (reversed: digit_count-1 down to 0)
                     fmt_glyph <= digit_buf[digit_count - emit_idx[3:0]];
                     fmt_pos <= emit_idx[3:0];
