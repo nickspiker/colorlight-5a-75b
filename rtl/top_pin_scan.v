@@ -731,8 +731,8 @@ module top_pin_scan #(
     // Binary display: 8px tall, 4px per bit, 1px separator
     wire in_frac_band = (wr_row < 6'd8);
     wire in_exp_band = (wr_row >= 6'd8) && (wr_row < 6'd16);
-    wire in_y_band = (wr_row >= 6'd16) && (wr_row < 6'd32);
-    wire in_z_band = (wr_row >= 6'd32) && (wr_row < 6'd48);
+    wire in_z_band = (wr_row >= 6'd16) && (wr_row < 6'd32);
+    wire in_y_band = (wr_row >= 6'd32) && (wr_row < 6'd48);
     wire in_entry_band = (wr_row >= 6'd48);
 
     wire [4:0] frac_bit_idx = 5'd31 - wr_col[6:2];
