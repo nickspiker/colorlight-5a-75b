@@ -1,6 +1,6 @@
 // NTSC B&W composite text display — scalable character grid
 // Pixel clock: 25 MHz (board oscillator, no PLL needed)
-// Output: 2-pin DAC (sync + video) through resistor network
+// Output: 2-pin DAC (sync + video) thru resistor network
 //
 // NTSC non-interlaced timing at 25 MHz:
 //   H total:  1589 clocks (63.56 µs)

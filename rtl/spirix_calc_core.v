@@ -131,23 +131,24 @@ module spirix_calc_core (
     // =========================================================================
     localparam [4:0]
         S_IDLE     = 5'd0,
-        S_EXEC     = 5'd1,
-        S_DIV_WAIT = 5'd2,
+        S_WAIT     = 5'd1,   // wait for addbit registered output
+        S_EXEC     = 5'd2,
+        S_DIV_WAIT = 5'd3,
         // Formatter states
-        S_FMT_ABS     = 5'd3,   // ABS(value) → magnitude
-        S_FMT_DIVSET  = 5'd4,   // set up DIV inputs (work_a = magnitude, work_b = 12)
-        S_FMT_DIV     = 5'd5,   // start DIV (inputs settled from previous clock)
-        S_FMT_DWAIT   = 5'd6,   // wait for div done
-        S_FMT_FLOOR   = 5'd7,   // FLOOR(quotient), set up SUB inputs
-        S_FMT_SUBWAIT = 5'd8,   // wait for addbit registered output
-        S_FMT_FCAP    = 5'd9,   // capture SUB result, set up MUL inputs
-        S_FMT_MULWAIT = 5'd10,  // wait for MUL inputs to settle
-        S_FMT_ADDHALF = 5'd11, // set up ADD(mul_result, 0.5) for rounding
-        S_FMT_HALFWT  = 5'd12, // wait for addbit registered output
-        S_FMT_DIGIT   = 5'd13, // extract digit from rounded result
-        S_FMT_DCAP    = 5'd14, // store digit, check loop
-        S_FMT_EMIT    = 5'd15, // write digits to output (reversed)
-        S_FMT_DONE    = 5'd16; // signal completion
+        S_FMT_ABS     = 5'd4,   // ABS(value) → magnitude
+        S_FMT_DIVSET  = 5'd5,   // set up DIV inputs (work_a = magnitude, work_b = 12)
+        S_FMT_DIV     = 5'd6,   // start DIV (inputs settled from previous clock)
+        S_FMT_DWAIT   = 5'd7,   // wait for div done
+        S_FMT_FLOOR   = 5'd8,   // FLOOR(quotient), set up SUB inputs
+        S_FMT_SUBWAIT = 5'd9,   // wait for addbit registered output
+        S_FMT_FCAP    = 5'd10,   // capture SUB result, set up MUL inputs
+        S_FMT_MULWAIT = 5'd11,  // wait for MUL inputs to settle
+        S_FMT_ADDHALF = 5'd12, // set up ADD(mul_result, 0.5) for rounding
+        S_FMT_HALFWT  = 5'd13, // wait for addbit registered output
+        S_FMT_DIGIT   = 5'd14, // extract digit from rounded result
+        S_FMT_DCAP    = 5'd15, // store digit, check loop
+        S_FMT_EMIT    = 5'd16, // write digits to output (reversed)
+        S_FMT_DONE    = 5'd17; // signal completion
 
     reg [4:0] state = S_IDLE;
     reg [2:0] alu_sel = 0;
@@ -225,11 +226,15 @@ module spirix_calc_core (
                 if (op_start && !fmt_start) begin
                     // --- Operator dispatch ---
                     case (op_slot)
-                        6'd13: begin add_op <= 3'd0; alu_sel <= 3'd0; res_is_binary <= 1; state <= S_EXEC; end
-                        6'd31: begin add_op <= 3'd1; alu_sel <= 3'd0; res_is_binary <= 1; state <= S_EXEC; end
-                        6'd16: begin alu_sel <= 3'd1; res_is_binary <= 1; state <= S_EXEC; end
+                        // Addbit (registered output): need S_WAIT before S_EXEC
+                        6'd13: begin add_op <= 3'd0; alu_sel <= 3'd0; res_is_binary <= 1; state <= S_WAIT; end
+                        6'd31: begin add_op <= 3'd1; alu_sel <= 3'd0; res_is_binary <= 1; state <= S_WAIT; end
+                        // Multiply (combinational): straight to S_EXEC
+                        6'd16: begin alu_sel <= 3'd1; res_is_binary <= 1; state <= S_WAIT; end
+                        // Divider: has own wait
                         6'd14: begin div_op <= 2'd0; div_start <= 1; alu_sel <= 3'd2; res_is_binary <= 1; state <= S_DIV_WAIT; end
                         6'd32: begin div_op <= 2'd2; div_start <= 1; alu_sel <= 3'd2; res_is_binary <= 1; state <= S_DIV_WAIT; end
+                        // Basic (combinational wire output): straight to S_EXEC
                         6'd12: begin basic_op <= 3'd0; alu_sel <= 3'd4; res_is_binary <= 0; state <= S_EXEC; end
                         default: state <= S_IDLE;
                     endcase
@@ -244,6 +249,11 @@ module spirix_calc_core (
                     fmt_len <= 0;
                     state <= S_FMT_ABS;
                 end
+            end
+
+            // Wait for registered ALU output (addbit, multiply)
+            S_WAIT: begin
+                state <= S_EXEC;
             end
 
             // --- Operator execution ---

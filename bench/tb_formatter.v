@@ -120,6 +120,34 @@ module tb_formatter;
         format_value(32'hA0000000, 16'sd2,  "neg_three");  // -3
         format_value(32'h80000000, 16'sd0,  "neg_one");    // -1
 
+        // Direct operator ADD test: 3 + 4 should be 7
+        $display("\n=== Operator ADD test: 3 + 4 ===");
+        stk_y_frac = 32'h60000000; stk_y_exp = 16'sd2;  // Y = 3
+        stk_x_frac = 32'h40000000; stk_x_exp = 16'sd3;  // X = 4
+        stk_depth = 3'd2;
+        @(posedge clk);
+        op_slot = 6'd13;  // add
+        op_start = 1;
+        @(posedge clk);
+        op_start = 0;
+        while (!op_done) @(posedge clk);
+        $display("  3 + 4 = frac=0x%08x exp=%0d", res_frac, $signed(res_exp));
+        $display("  Expected: frac=0x70000000 exp=3 (=7)");
+
+        // Direct operator ADD test: 3 + 3 should be 6
+        $display("\n=== Operator ADD test: 3 + 3 ===");
+        stk_y_frac = 32'h60000000; stk_y_exp = 16'sd2;  // Y = 3
+        stk_x_frac = 32'h60000000; stk_x_exp = 16'sd2;  // X = 3
+        stk_depth = 3'd2;
+        @(posedge clk);
+        op_slot = 6'd13;  // add
+        op_start = 1;
+        @(posedge clk);
+        op_start = 0;
+        while (!op_done) @(posedge clk);
+        $display("  3 + 3 = frac=0x%08x exp=%0d", res_frac, $signed(res_exp));
+        $display("  Expected: frac=0x60000000 exp=3 (=6)");
+
         // Direct operator multiply test: 3 * 4 should be 12
         $display("\n=== Operator MUL test: 3 * 4 ===");
         stk_y_frac = 32'h60000000; stk_y_exp = 16'sd2;  // Y = 3

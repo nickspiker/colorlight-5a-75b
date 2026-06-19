@@ -119,7 +119,7 @@ module top_pin_scan #(
     BB bb_p62 (.B(p62), .I(pin_drv[62]), .T(pin_t[62]), .O(pin_in[62]));
     BB bb_p63 (.B(p63), .I(pin_drv[63]), .T(pin_t[63]), .O(pin_in[63]));
     BB bb_p64 (.B(p64), .I(pin_drv[64]), .T(pin_t[64]), .O(pin_in[64]));
-    // p65 (T2) = J4 pin 6, ext_led through 74HC245T buffer
+    // p65 (T2) = J4 pin 6, ext_led thru 74HC245T buffer
     assign ext_led = ext_led_state;  // separate geiger (1/256 on, 13/256 off)
     assign pin_in[65] = 1'b1;  // stub: always reads HIGH
     BB bb_p66 (.B(p66), .I(pin_drv[66]), .T(pin_t[66]), .O(pin_in[66]));
@@ -130,7 +130,7 @@ module top_pin_scan #(
     reg [66:0] pin_result = {67{1'b1}};
 
     // Scan only button pins: 27,28,44,49,50,51,56,57,62,63 (10 pins)
-    // scan_idx cycles through these specific pins
+    // scan_idx cycles thru these specific pins
     reg [3:0] btn_scan = 0;  // 0-9 index into button pin list
 
     // Same scan_div timing as original (proven to work), but only 10 button pins.
